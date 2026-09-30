@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 8: Model Selection & Experiment Tracking</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 8: Model Selection & Experiment Tracking
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today has two parts. In Part 1 we go beyond the grid search from Week 2: smarter search strategies, multi-fidelity methods, AutoML, and then the two questions that decide whether a tuning result can be trusted, namely nested cross-validation and statistical comparison of models. In Part 2 we use MLflow Tracking properly, so that every number we report can be traced back to a run. The lab notebook for this week is `lab.ipynb`.
+
+---
+class: spacious, fit2
+
+# A familiar story
+
+- A team tunes 500 configurations of a gradient boosting model for customer churn
+- Best 5-fold CV ROC AUC: **0.912**. It goes into the slide deck for management.
+- Three months in production: **0.89**
+- A second team reports that their model "beats ours by 0.004 AUC"
+
+--
+
+Three questions for today:
+1. How do we search 500 configurations **efficiently**?
+2. Why was 0.912 **too optimistic**, and what should we have reported?
+3. Is a 0.004 difference **real**, and can we reproduce either number?
+
+???
+This is a pattern you will meet in industry and in papers alike. The same thing happens publicly on Kaggle when the private leaderboard "shakes up" relative to the public one: people selected models on a noisy estimate and then reported that same estimate. Ask the class: which of the three questions do you think causes the most damage in practice? My answer is the second one, because it is invisible unless you design the evaluation correctly. Keep these three questions in mind; each block of today's lecture answers one of them.
+
+---
+# Motivation
+- Need to select among models
+- Need to select hyperparameters
+- Need to select among preprocessing methods
+- All of these choices are made **on data**, so they can overfit
+
+???
+Model selection is not only about hyperparameters of one estimator. Choosing between a random forest and logistic regression, or between scaling and not scaling, is the same kind of decision. Every choice we make by looking at validation scores uses information from the data, which is why the evaluation part later today matters. In Week 3 we saw that preprocessing must live inside the pipeline for exactly this reason.
+
+---
+# Conditional Hyperparameters
+- Kernels: `gamma` only matters for the RBF kernel, `degree` only for the polynomial kernel
+- Neural nets: the size of layer 3 only matters if there are 3 layers
+- Pipelines: the parameters of a step only matter if the step is chosen
+
+???
+Conditional hyperparameters are what make the search space awkward. A plain grid does not know that `degree` is irrelevant for an RBF kernel, so it wastes evaluations on duplicates. In scikit-learn you can express this with a list of parameter grids, one per branch; we will use that trick in the AutoML part. Ask: in the MLP from Week 6, which hyperparameters were conditional?
+
+---
+# Model selection as hyperparameter optimization
+- One big search with many conditional hyperparameters
+- Types: categorical, integer, continuous, conditional
+- Different scales and priors (log-uniform for `C`, `learning_rate`)
+- **CASH**: Combined Algorithm Selection and Hyperparameter optimization
+- A global optimization problem on a complex, mixed space
+
+???
+The AutoML literature calls this the CASH problem: pick the algorithm and its hyperparameters jointly. Treating the algorithm as one more categorical hyperparameter turns model selection into a single optimization problem. The space is mixed and conditional, so gradient-based optimizers do not apply directly. Point out that the choice of scale, for example log-uniform for regularization strengths, matters as much as the choice of optimizer.
+
+---
+# Issues with Grid Search
+- Need to define the grid by hand
+- Cost is exponential in the number of hyperparameters
+- Wastes evaluations on unimportant dimensions
+
+???
+With five hyperparameters and five values each we already need 3125 settings times the number of folds. Worse, if only one or two hyperparameters actually matter, a grid tests each important value only five times. Grid search is still fine for one or two parameters, and it is easy to parallelize and reproduce.
+
+---
+class: middle
+# Black-Box Search Procedures
+`$$\Lambda^* = \arg\max_\Lambda f(\Lambda)$$`
+Parameters $\Lambda$, model evaluation $f$ (e.g. mean CV score).
+
+???
+We treat the whole training and validation procedure as an unknown function f of the hyperparameters. f is not differentiable, may not be smooth, is noisy because of the finite validation set, and is expensive: one evaluation can mean training a model many times. That combination, expensive and noisy, is what shapes all the methods that follow.
+
+---
+class: fit
+# Random Search
+![:scale 100%](images/bergstra_random.jpeg)
+
+.smallest[Bergstra & Bengio, JMLR 2012]
+
+???
+This is the classic figure from Bergstra and Bengio. When one parameter is important and the other is not, a 3 by 3 grid only tries three distinct values of the important one, while nine random points try nine distinct values. In most real problems only a few hyperparameters matter, so random search is a strong default for the same budget. Ask the class: when would a grid still be better? With one or two discrete parameters.
+
+---
+# Random Search with scikit-learn
+```python
+from scipy.stats import randint
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
+
+param_dist = {"max_depth": [3, None],
+              "max_features": randint(1, 11),
+              "min_samples_split": randint(2, 11),
+              "bootstrap": [True, False],
+              "criterion": ["gini", "entropy"]}
+random_search = RandomizedSearchCV(
+    RandomForestClassifier(n_estimators=100), param_distributions=param_dist,
+    n_iter=50, cv=5, random_state=0)
+```
+- lists or objects with an `rvs` method (`scipy.stats` distributions)
+- Use continuous distributions (`loguniform`) for the biggest advantage
+
+???
+The interface is the same as GridSearchCV, except that you pass distributions and a budget `n_iter`. Lists are sampled uniformly; scipy distributions are sampled with their `rvs` method. For regularization parameters use `scipy.stats.loguniform`, never a uniform distribution over several orders of magnitude. Always set `random_state` so the sampled candidates can be reproduced and logged.
+
+---
+# Bayesian Optimization, SMBO
+.wide-left-column[
+
+- Fit a cheap probabilistic model (surrogate) to the evaluations so far
+
+- Pick the next point by trading off exploration and exploitation
+
+- The trade-off is encoded in an acquisition function (e.g. expected improvement)
+]
+.narrow-right-column[
+.center[
+![:scale 110%](images/smbo.png)
+]]
+
+???
+Sequential model-based optimization replaces blind sampling by learning. After each evaluation we update a model of f and ask it where the next evaluation is most promising: either where the predicted score is high, or where the model is uncertain. This pays off when f is expensive, because the surrogate is cheap. The price is that it is sequential by nature, so it parallelizes less naturally than random search.
+
+---
+# Surrogate models
+![:scale 100%](images/smbo_table.png)
+
+???
+Three families of surrogates are in common use. Gaussian processes give good uncertainty estimates but scale poorly with the number of evaluations and handle categorical and conditional parameters awkwardly. Random forests, as in SMAC, handle mixed and conditional spaces well. The tree-structured Parzen estimator (TPE) models the density of good and bad configurations separately, and it is the default in Optuna. Neural-network surrogates also exist but rarely beat these for tabular tuning budgets.
+
+---
+class: fit
+# Bayesian optimization in practice: Optuna
+```python
+import optuna
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.model_selection import cross_val_score
+
+def objective(trial):
+    params = {
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 8, 128, log=True),
+        "l2_regularization": trial.suggest_float("l2_regularization", 1e-6, 10, log=True),
+    }
+    model = HistGradientBoostingClassifier(**params, random_state=0)
+    return cross_val_score(model, X, y, cv=5, scoring="roc_auc").mean()
+
+study = optuna.create_study(direction="maximize",
+                            sampler=optuna.samplers.TPESampler(seed=0))
+study.optimize(objective, n_trials=50)
+study.best_params, study.best_value
+```
+
+???
+Optuna uses a "define-by-run" interface: the search space is written as ordinary Python inside the objective, so conditional parameters are just if statements. The default sampler is TPE; `GPSampler` and `CmaEsSampler` are alternatives. Note that `study.best_value` is the maximum of fifty noisy CV estimates, so it is optimistically biased; we come back to this in the nested CV part. In Part 2 we will log every trial to MLflow.
+
+---
+class: spacious, fit
+
+# Implementations (2026)
+- **Optuna**: TPE, GP, CMA-ES, multi-objective, pruning; our default in this course
+- **SMAC3**: random forest and GP surrogates, Hyperband-style multi-fidelity
+- **Ray Tune**: distributed execution, wraps Optuna and others
+- **scikit-learn**: `RandomizedSearchCV`, `HalvingGridSearchCV`, `HalvingRandomSearchCV`
+- Hyperopt (TPE) still works but sees little development; scikit-optimize, Spearmint and GPyOpt are archived
+
+???
+The tool landscape has consolidated. For this course use scikit-learn's search classes for simple cases and Optuna when you need a smarter sampler, conditional spaces or pruning. SMAC3 is the research-grade option from the AutoML groups in Freiburg and Hannover. Several libraries you will still see in older tutorials are no longer maintained; avoid starting new projects on them.
+
+---
+# Beyond Black-Box
+- Multi-fidelity optimization: use cheap approximations of $f$
+- Meta-learning: use experience from other datasets
+- Gradient-based hyperparameter optimization (mainly for neural nets)
+
+???
+Black-box methods ignore two useful facts: we can evaluate f cheaply at low fidelity, for example on a subsample, and we have seen many datasets before. The next sections exploit each of these. Gradient-based methods differentiate through training and are mostly relevant for deep learning, so we skip them.
+
+---
+# Multi-Fidelity Search
+.smaller[Approximate the function by a similar, cheaper function]
+.center[
+![:scale 70%](images/multi-fidelity-digits.png)
+![:scale 70%](images/multi-fidelity-digits-rf.png)
+]
+
+???
+Top row: an RBF-SVM grid on the digits data, trained on 10, 20, 40 and 80 percent of the data. Bottom row: a random forest with 10 up to 160 trees. The location of the good region is visible already at the cheapest fidelity, while the cost grows quickly. This is the observation all multi-fidelity methods rely on: rankings at low budget are informative about rankings at high budget. Ask: when would this assumption fail? For example, when strong regularization only pays off on large data.
+
+---
+# Multi-Fidelity Optimization
+- Budget can be: number of samples, number of trees or boosting rounds, epochs
+- Evaluate many configurations cheaply, spend more only on promising ones
+- Related to multi-armed bandits, with differences:
+    - non-stationary: scores change as the budget grows
+    - pulling an arm (evaluating) is expensive
+    - possibly infinitely many arms (continuous parameters)
+
+???
+The bandit view helps: each configuration is an arm, and we want to spend our budget on the arms that look best. The differences listed here are why standard bandit algorithms do not apply directly. Successive halving is the simplest algorithm that works well in this setting.
+
+---
+# Successive Halving
+- Start with $n$ configurations and a small budget each
+- Evaluate all, keep the best $1/\eta$ (e.g. $\eta=3$: keep the best third)
+- Multiply the budget of the survivors by $\eta$ and repeat
+- Stop when one configuration (or the full budget) is left
+--
+![:scale 70%](images/halving_algorithm.png)
+
+???
+The idea is a tournament: many configurations get a small budget, and only the winners of each round get a bigger one. With eta equal to 3, each round keeps one third of the candidates and triples their resources, so each round costs roughly the same total compute. The algorithm box is from the Hyperband paper; you do not need the exact budget arithmetic, only this keep-the-best-and-scale-up loop.
+
+---
+# Successive Halving Example
+- configurations $n=81$, $\eta = 3$
+- resource per configuration: number of training samples (max 10 000)
+```
+train 81 configurations with resources   41
+train 27 configurations with resources  123
+train  9 configurations with resources  370
+train  3 configurations with resources 1111
+train  1 configurations with resources 3333
+resources total: 16638
+```
+
+???
+Read the table from top to bottom: each row has a third of the configurations and three times the resource. Each round costs about the same, roughly 3300 sample-fits, so the whole procedure costs about five full fits in total, compared to 81 full fits for exhaustive evaluation. Think of resources as "number of samples used" or "number of trees built".
+
+---
+class: center
+# Successive Halving: learning curves
+![:scale 90%](images/halving_curves.png)
+
+???
+Each line is one configuration's loss as the budget grows. Configurations that are bad early are dropped at the first vertical line, and only the survivors get more budget. The risk is visible too: a configuration that starts slowly but would end best (a "late bloomer") can be eliminated early.
+
+---
+class: fit2
+# Successive Halving in scikit-learn
+```python
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401
+from sklearn.model_selection import HalvingGridSearchCV
+from sklearn.svm import SVC
+
+param_grid = {"gamma": np.logspace(-3, 2, 6), "C": np.logspace(-3, 2, 6)}
+sh = HalvingGridSearchCV(SVC(), param_grid, factor=3,
+                         resource="n_samples", random_state=0)
+sh.fit(X_train, y_train)
+sh.n_candidates_, sh.n_resources_   # [36, 12, 4], [100, 300, 900]
+```
+.center[
+![:scale 40%](images/halving_sklearn.png)
+]
+
+???
+Successive halving is built into scikit-learn, still behind the experimental import. `factor` is eta, and `resource` can be `"n_samples"` or any integer parameter such as `n_estimators`. On the digits data it evaluated 36, 12 and 4 candidates on 100, 300 and 900 samples, and was about three times faster than the full grid with a very similar test score. The plot shows the scores per candidate across iterations. `HalvingRandomSearchCV` combines this with random sampling.
+
+---
+# Hyperband
+.center[
+![:scale 78%](images/hyperband_curves.png)
+]
+
+???
+Successive halving has one knob that is hard to set: how many configurations to start with for a given budget. Many configurations with a tiny budget each risk eliminating late bloomers; few configurations with a large budget waste compute. Hyperband hedges by running several successive-halving "brackets" with different trade-offs, from very aggressive to plain random search. The figure compares it with random search and Bayesian optimization on neural network benchmarks.
+
+---
+class: fit
+# BOHB: Bayesian Optimization + Hyperband
+.center[
+![:scale 85%](images/bohb_curves.png)
+]
+
+???
+BOHB replaces the random sampling of new configurations inside Hyperband with a TPE-like model. Early on it behaves like Hyperband and finds good configurations quickly; later the model makes it converge like Bayesian optimization. The same idea is available today in SMAC3 and, in simplified form, via Optuna's TPE sampler combined with a Hyperband pruner.
+
+---
+# Multi-fidelity in practice
+"With the exception of the LeNet experiment (Section 3.3) and the 117 Datasets experiment (Section 4.2.1), the most aggressive bracket of SuccessiveHalving outperformed Hyperband in all of our experiments."
+.quote_author[Li et al., JMLR 2018]
+
+- scikit-learn: `HalvingGridSearchCV`, `HalvingRandomSearchCV`
+- Optuna: pruners (`SuccessiveHalvingPruner`, `HyperbandPruner`) stop bad trials early
+- Needs a budget where low fidelity is informative
+
+???
+This quote from the Hyperband authors themselves is worth reading carefully: in most of their experiments plain aggressive successive halving was at least as good. So start with successive halving. In Optuna, the objective reports intermediate scores with `trial.report` and checks `trial.should_prune()`; the pruner then kills trials that fall behind, which is successive halving applied to running trials. The lab shows this with CV folds as the budget.
+
+---
+class: middle, center
+# Meta-learning
+## Learning from experience (other datasets)
+
+???
+The second way beyond the black box is to use what we have learned on other datasets. A human expert does this all the time: nobody starts tuning a random forest from a uniform prior over max_features.
+
+---
+# Ranking
+
+- Run many algorithms on a large collection of datasets (e.g. OpenML)
+- Rank by "best on average"
+- Try the algorithms in that order
+
+???
+The simplest form of meta-learning is a fixed ranking. OpenML hosts results of millions of runs, which makes this easy to compute. It ignores the characteristics of the new dataset, but it is a strong baseline and it is how most practitioners already work: try gradient boosting first.
+
+---
+# Portfolios
+
+- Choose a small **diverse** set of configurations such that at least one is good on most datasets
+- Optimal selection is a submodular optimization problem
+- Greedy approximation works well
+- Used in auto-sklearn 2.0 and AutoGluon
+
+???
+A portfolio is better than a ranking because it optimizes for coverage: the second configuration is chosen to be good where the first one is bad. Greedy selection has a provable approximation guarantee for this kind of objective. In practice a portfolio of a few dozen configurations, evaluated with successive halving, is a very strong and cheap AutoML baseline.
+
+---
+class: fit
+# Meta-Features and Meta-Models
+.center[
+![:scale 90%](images/metalearning-diagram.png)
+]
+
+???
+Here we describe each dataset by meta-features, such as the number of samples, number of features, class balance, or the score of simple landmark models, and learn a model that predicts which configuration will work well. The weak point is that simple meta-features capture little of what makes a dataset hard. It is used for warm-starting the search rather than replacing it.
+
+---
+class: fit
+# Active Testing and Recommendations
+.smaller[
+- Probabilistic matrix factorization for AutoML (Fusi et al., NeurIPS 2018)
+- Datasets × pipelines performance matrix, treated like a recommender system]
+![:scale 90%](images/fusi_latent.png)
+
+???
+Think of the table of datasets by pipelines like a table of users by movies. Collaborative filtering then predicts how a pipeline will do on a new dataset from a few evaluated pipelines. The latent space in the figure places similar pipelines near each other. This is an elegant idea that connects AutoML to recommender systems.
+
+---
+# Ensemble Models
+![:scale 100%](images/meta-learning-ensemble.png)
+
+???
+AutoML systems evaluate hundreds of models anyway, so instead of keeping only the best one they build an ensemble from the evaluated models, typically with greedy ensemble selection or stacking, which we saw in Week 5. This almost always adds a little performance for free. AutoGluon pushes this further with multi-layer stacking.
+
+---
+# AutoML systems today
+- **AutoGluon** (Tabular): portfolio of strong models + multi-layer stacking; top of the AMLB benchmark
+- **FLAML**: cost-frugal search, good for tight time budgets
+- **auto-sklearn**: introduced meta-learning warm start + SMAC + ensemble selection; no longer actively maintained and does not install on current Python versions
+- **TPOT**: genetic programming over pipelines
+- Benchmark: AMLB, Gijsbers et al., JMLR 2024
+
+???
+The systems that work best today combine the ideas from this lecture: portfolios, successive halving, and ensembling, more than sophisticated Bayesian optimization. auto-sklearn is historically important, but I would not base a project on it today. None of these tools are installed in the course environment; the next slide shows that you can build the core idea yourself with scikit-learn. If your project uses an AutoML tool, you still have to evaluate it with the same rigor as any other model.
+
+---
+class: fit
+# A minimal AutoML: portfolio + successive halving
+```python
+from scipy.stats import loguniform, randint
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import HalvingRandomSearchCV
+
+pipe = Pipeline([("scale", StandardScaler()), ("clf", LogisticRegression())])
+space = [
+    {"clf": [LogisticRegression(max_iter=2000)], "clf__C": loguniform(1e-3, 1e2)},
+    {"clf": [SVC()], "clf__C": loguniform(1e-2, 1e3),
+     "clf__gamma": loguniform(1e-4, 1)},
+    {"scale": ["passthrough"], "clf": [RandomForestClassifier(random_state=0)],
+     "clf__max_features": randint(2, 30)},
+    {"scale": ["passthrough"], "clf": [HistGradientBoostingClassifier(random_state=0)],
+     "clf__learning_rate": loguniform(1e-2, 1)},
+]
+search = HalvingRandomSearchCV(pipe, space, n_candidates=60, factor=3,
+                               random_state=0, n_jobs=-1).fit(X_train, y_train)
+```
+
+???
+A list of dictionaries expresses conditional hyperparameters: each dictionary is one branch with its own model and parameters, and even the preprocessing step can be switched off with "passthrough". Successive halving then allocates the budget across model families. On the digits data this finds an RBF-SVM in about ten seconds. This is essentially what the portfolio-plus-halving AutoML tools do, minus the carefully learned portfolio.
+
+---
+# Practical recommendations
+- Start with a strong default (gradient boosting) and a random or halving search
+- Multi-fidelity (successive halving, pruning): simple and effective
+- Optuna/TPE when evaluations are expensive or the space is conditional
+- AutoML tools as a **baseline** to beat, not as a replacement for evaluation
+- Log every trial (Part 2) and evaluate the whole procedure (next section)
+
+???
+This is the practical summary of Part 1a. The order matters: good defaults and cheap search first, sophistication later. If an AutoML tool beats your hand-tuned model by a lot, that tells you something about your pipeline. If you tune much at all, the evaluation must account for the tuning, which is what nested cross-validation does.
+
+---
+# Criticisms of AutoML
+- Do we need 100 classifiers?
+- Do we need complex pipelines and ensembles?
+- Creates large models that are hard to deploy and interpret
+- "Making it too easy": skipping problem understanding and evaluation design
+
+???
+Automation shifts the effort, it does not remove it. The questions that matter most, what is the target, what is the right metric, how do we split the data without leakage, are not answered by any AutoML tool. Ask the class: which of the decisions from Weeks 3 and 7 could an AutoML tool get wrong without noticing? Examples: grouped data, time dependence, the wrong metric for an imbalanced problem.
+
+---
+class: center, middle
+
+# Evaluating a tuned model: nested cross-validation
+
+???
+Now back to the second question from the opening: why was 0.912 too optimistic? The answer is that the same data was used both to choose the configuration and to report its score.
+
+---
+class: fit
+# The winner's curse
+- `search.best_score_` is the **maximum** of many noisy CV estimates
+- The maximum of noisy estimates is biased upward, even if all models are equally good
+- The more configurations you try, the larger the bias
+- Classic example: Kaggle public vs private leaderboard shake-ups
+
+.center[
+![:scale 50%](images/winners_curse.png)
+]
+
+???
+The figure is a deliberately extreme experiment: the labels are random, so every model has a true accuracy of 50 percent. Yet the best CV score of a search grows with the number of configurations, simply because we pick the luckiest one. Nested CV stays at chance level. With real signal the effect is smaller but has the same direction. Ask the class: in the opening story, which number would you report instead of 0.912?
+
+---
+# Nested cross-validation
+- **Inner loop**: the search (e.g. `GridSearchCV`) selects hyperparameters
+- **Outer loop**: evaluates the *whole search procedure* on data it never saw
+```python
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
+
+inner = StratifiedKFold(5, shuffle=True, random_state=0)
+outer = StratifiedKFold(5, shuffle=True, random_state=1)
+search = GridSearchCV(make_pipeline(StandardScaler(), SVC()), param_grid, cv=inner)
+
+nested_scores = cross_val_score(search, X, y, cv=outer)   # 5 x (5 x 30) fits
+final_model = search.fit(X, y)                           # the model you deploy
+```
+
+???
+In Week 2 we mentioned nested CV briefly; here is how and why to use it. The only change to ordinary cross-validation is that the estimator passed to `cross_val_score` is itself a search, so each outer fold runs a full inner search on its training part. The cost is multiplied by the number of outer folds. A common confusion: nested CV does not produce a model. The final model is the search refit on all data; nested CV tells you what score to expect from that procedure.
+
+---
+# Nested CV: worked example
+Breast cancer data (569 samples), RBF-SVM, 6 × 5 grid over `C`, `gamma`
+
+| Estimate | Accuracy |
+|---|---|
+| `best_score_` of the grid search (non-nested) | 0.981 |
+| Nested CV, 5 outer folds | 0.975 ± 0.012 |
+
+- Difference is small here: small grid, easy problem
+- Grows with: search space size, small data, noisy metric
+- Outer folds may pick **different** hyperparameters: that is expected
+
+???
+These numbers come from the lab notebook. The gap of about half a percentage point is modest, because the grid is small and the problem is easy. With Optuna running hundreds of trials on a few hundred samples, the gap can be several points, as the random-label figure showed. Different outer folds selecting different C and gamma is not a bug: nested CV evaluates the procedure, not a particular configuration. If the selected values vary wildly, that tells you the score surface is flat.
+
+---
+class: center, middle
+
+# Statistical comparison of models
+
+???
+Now the third question: is a difference of 0.004 AUC between two models real? Answering it requires a test that respects how cross-validation scores are generated.
+
+---
+# Is model A better than model B?
+- CV gives $J$ paired scores: $a_j$, $b_j$ on the same splits
+- Differences $d_j = a_j - b_j$; mean $\bar d$, variance $\hat\sigma^2_d$
+- Tempting: paired t-test, $t = \bar d \,/\, \sqrt{\hat\sigma^2_d / J}$
+--
+
+## Why this is optimistic
+- Training sets overlap heavily (with 5-fold CV, any two share 75% of samples)
+- Test sets in repeated CV overlap too
+- So the $d_j$ are **not independent**: $\hat\sigma^2_d / J$ underestimates the variance of $\bar d$
+- Result: far too many "significant" differences (Dietterich, 1998; Nadeau & Bengio, 2003)
+
+???
+The paired t-test assumes independent differences. Cross-validation folds are not independent: the training sets overlap, so the models trained in different folds are very similar, and the fold scores are correlated. The naive variance estimate ignores this correlation and is too small. Worse, repeating CV more times makes J larger and the p-value smaller without adding real information. Ask the class: with 100 repetitions of 10-fold CV, what happens to the naive test? It will declare almost any difference significant.
+
+---
+# Corrected resampled t-test
+Nadeau & Bengio (2003), *Machine Learning* 52:239–281
+
+`$$t = \frac{\bar d}{\sqrt{\left(\frac{1}{J} + \frac{n_\text{test}}{n_\text{train}}\right)\hat\sigma^2_d}}, \qquad \text{df} = J - 1$$`
+
+- $J$: number of train/test splits (e.g. $r \times k$ for $r$-times repeated $k$-fold)
+- $n_\text{test}/n_\text{train} = 1/(k-1)$ for $k$-fold CV
+- The extra term accounts for the correlation between splits
+- Recommended with repeated CV, e.g. $10 \times 10$ (Bouckaert & Frank, 2004)
+
+???
+The correction inflates the variance by a term that does not shrink as J grows. So repeating CV more often no longer creates significance out of nothing; the test statistic converges instead of growing without bound. The correction is a heuristic, derived under simplifying assumptions, but it has much better type I error than the naive test and reasonable power. It is the standard choice when comparing two models on one dataset.
+
+---
+# Corrected t-test in code
+```python
+import numpy as np
+from scipy import stats
+
+def corrected_ttest(a, b, n_train, n_test):
+    """Nadeau-Bengio corrected resampled t-test for paired CV scores."""
+    d = np.asarray(a) - np.asarray(b)
+    J = len(d)
+    var = (1 / J + n_test / n_train) * d.var(ddof=1)
+    t = d.mean() / np.sqrt(var)
+    p = 2 * stats.t.sf(abs(t), df=J - 1)
+    return t, p
+
+cv = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=0)
+s_lr = cross_val_score(lr_pipe, X, y, cv=cv, scoring="roc_auc")
+s_rf = cross_val_score(rf, X, y, cv=cv, scoring="roc_auc")   # same splits!
+```
+
+???
+The function is only a few lines, and you should keep it in your toolbox. The essential requirement is that both models are evaluated on exactly the same splits, which is why we pass the same `cv` object with a fixed random state. In Part 2 we apply this same function to per-fold scores pulled from MLflow.
+
+---
+# Worked example: logistic regression vs random forest
+Breast cancer data, 10 × 5-fold CV, ROC AUC
+
+| | |
+|---|---|
+| Mean AUC, logistic regression | 0.9947 |
+| Mean AUC, random forest | 0.9905 |
+| Mean difference $\bar d$ | 0.0042 |
+| Naive paired t-test | $t = 3.82$, $p = 0.0004$ |
+| Corrected resampled t-test | $t = 1.04$, $p = 0.30$ |
+
+- Same data, same scores: the conclusion flips
+- "No significant difference" $\neq$ "no difference": it means the data cannot tell
+
+???
+This is the example from the lab, and it is the "what goes wrong in practice" moment of today. The naive test says logistic regression is clearly better, with p below 0.001. The corrected test says the evidence is weak, p equals 0.3. Many published comparisons use the naive version. Emphasize the last bullet: failing to reject is not evidence of equality; if you need to claim equivalence, you need an equivalence test or a Bayesian analysis.
+
+---
+# Many models, many datasets
+Demšar (2006), *JMLR* 7:1–30
+
+- Rank the $k$ models on each of $N$ datasets (1 = best, ties averaged)
+- **Friedman test**: are the average ranks $R_j$ all equal?
+- If rejected, **Nemenyi post-hoc test**: two models differ if their average ranks differ by more than
+`$$\text{CD} = q_\alpha \sqrt{\frac{k(k+1)}{6N}}$$`
+- $q_\alpha$: studentized range statistic / $\sqrt 2$ (2.850 for $k=6$, $\alpha=0.05$)
+- Visualize as a **critical difference diagram**
+
+???
+When the claim is "method A is generally better", the unit of evidence is the dataset, not the fold. Demšar's recommendation is to use ranks, which are robust to datasets with very different score scales, and a non-parametric test. The Friedman test checks whether any differences exist; the Nemenyi test then compares all pairs with a single critical difference. Models whose average ranks are closer than CD are connected by a bar in the diagram.
+
+---
+class: fit
+# Worked example: 6 models on 12 OpenML datasets
+.center[
+![:scale 80%](images/critical_difference.png)
+]
+- Friedman: $\chi^2_F = 27.8$, $p < 10^{-4}$; CD = 2.18 with $N=12$
+- Random forest, gradient boosting and logistic regression are **not** distinguishable
+- Only the clearest gaps (e.g. forests/boosting vs a single tree) are significant
+
+???
+These are ROC AUC scores from 5-fold CV on twelve small binary OpenML datasets, computed in the lab. The Friedman test clearly rejects equality. But with only twelve datasets the critical difference is more than two ranks, so even the gap between the top three and naive Bayes is not significant. This is typical: comparisons across datasets have low power, and many papers claim wins that such a diagram would not support. Logistic regression tying with boosting also tells you something about these datasets.
+
+---
+# Caveats and modern practice
+- Nemenyi is conservative; pairwise Wilcoxon signed-rank tests with Holm correction are often preferred (Benavoli et al., JMLR 2016)
+- Bayesian alternatives give probabilities of "A better", "equivalent", "B better" with a region of practical equivalence (Benavoli et al., JMLR 2017)
+- Statistical significance is not practical significance: report effect sizes
+- Fix the evaluation protocol **before** looking at results
+
+???
+The mean-rank post-hoc tests have a known weakness: whether A and B differ can depend on which other models are in the comparison. For a small number of pairwise comparisons, Wilcoxon signed-rank tests with a Holm correction avoid this. The Bayesian approach is attractive because it can express equivalence, which the frequentist tests cannot. Whatever you use, decide on it before you see the numbers, or the test becomes one more tuning knob.
+
+---
+# Try it: predict the winner (15 min)
+In `lab.ipynb`, section "Try it 1":
+
+1. Before running anything, write down your predicted ranking of the six models on the 12 OpenML datasets
+2. Add one model of your choice (e.g. a tuned SVC or an MLP from Week 6)
+3. Run the benchmark, redraw the critical difference diagram
+4. Which of your predictions were confirmed, and which differences are significant?
+
+???
+Give students about two minutes for the prediction and write a few predictions on the board. Most people expect gradient boosting to win clearly; the diagram usually shows a tie at the top. The point is to experience how much of our intuition about "which model is better" survives a proper test. Collect the added models at the end and compare their average ranks.
+
+---
+class: center, middle
+
+# Part 2: Experiment Tracking with MLflow
+
+???
+Part 2 answers the reproducibility half of the third question. We installed MLflow in Week 1 and have logged simple runs since Week 2; today we use it for tuning and comparison. MLflow Models and the Model Registry come in Week 12.
+
+---
+# Why track experiments?
+
+- A tuning run produces hundreds of models: which one produced the number in your paper?
+- Results depend on **code version + data version + parameters + random seed**
+- Notebooks overwrite state; spreadsheets of results drift out of sync
+- Tracking makes every result **traceable, comparable and reproducible**
+
+.center[Every number in your paper must trace back to a run ID.]
+
+???
+Ask the class how many of them could, today, reproduce the exact number from their last homework. Usually few can. The problem is not carelessness but volume: a single Optuna study creates more results than anyone can track by hand. A tracking server makes this automatic, and it is also what reviewers increasingly expect when they ask for code and configurations.
+
+---
+# MLflow Tracking: core concepts
+
+- **Experiment**: a named group of runs (e.g. one research question)
+- **Run**: one execution of your code
+- Each run records:
+  - **Parameters**: hyperparameters, preprocessing choices
+  - **Metrics**: scores, possibly per step or per fold
+  - **Artifacts**: plots, models, prediction files
+  - **Tags**: Git commit, dataset hash, author
+- UI: `mlflow ui` → compare runs side by side
+
+???
+These five concepts cover almost everything. Parameters are inputs, metrics are numeric outputs that can have a step, artifacts are files, and tags are free-form metadata. By default MLflow stores everything in a local SQLite file, `mlflow.db`; the same code can log to a shared server by setting a tracking URI. Run `mlflow ui` in the folder that contains the database to browse the runs.
+
+---
+# Logging a run
+
+```python
+import mlflow
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.model_selection import cross_val_score
+
+mlflow.set_experiment("churn-baselines")
+
+params = {"learning_rate": 0.1, "max_leaf_nodes": 31}
+with mlflow.start_run(run_name="hgb-default"):
+    mlflow.log_params(params)
+    model = HistGradientBoostingClassifier(**params, random_state=0)
+    scores = cross_val_score(model, X, y, cv=5, scoring="roc_auc")
+    mlflow.log_metric("cv_roc_auc_mean", scores.mean())
+    mlflow.log_metric("cv_roc_auc_std", scores.std())
+    mlflow.set_tag("git_commit", git_commit)
+```
+
+???
+This is the pattern for manual logging. The `with` block opens a run and closes it even if the code fails, and the failed run is marked as such. Log the parameters before training, so that a crashed run still records what it tried. In the lab we use a telecom churn dataset from OpenML, and we additionally log each fold's score with `step`, which we need later for the corrected t-test.
+
+---
+# Autologging and datasets
+
+```python
+mlflow.sklearn.autolog()          # params, metrics, model logged automatically
+
+with mlflow.start_run():
+    dataset = mlflow.data.from_pandas(df, name="churn-v2", targets="churn")
+    mlflow.log_input(dataset, context="training")
+    model.fit(X_train, y_train)
+```
+
+- `autolog` also records the fitted model and its signature
+- `log_input` stores the dataset's name, schema and digest: **data version**
+
+???
+Autologging patches scikit-learn's `fit` so that all constructor parameters, training metrics and the model itself are logged without extra code. It is convenient but logs training-set metrics, which are not what you want to report; log your CV or test metrics explicitly. Dataset logging records a digest of the data, so you can tell later whether two runs used the same version. Remember to disable autolog when you do not want every fit logged, for example inside a large search.
+
+---
+# Tracking a hyperparameter search
+
+```python
+import optuna
+
+def objective(trial):
+    params = {
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 8, 128, log=True),
+    }
+    with mlflow.start_run(nested=True):
+        mlflow.log_params(params)
+        score = cross_val_score(
+            HistGradientBoostingClassifier(**params, random_state=0),
+            X, y, cv=5, scoring="roc_auc").mean()
+        mlflow.log_metric("cv_roc_auc", score)
+    return score
+
+with mlflow.start_run(run_name="optuna-hgb"):
+    optuna.create_study(direction="maximize").optimize(objective, n_trials=50)
+```
+
+???
+Each trial becomes a child run under one parent run for the whole study. In the UI the children collapse under the parent, and you can plot the score against each parameter across trials. The parent run is the natural place to log the best parameters and, in a nested-CV setting, the outer-fold score. This is where Part 1 and Part 2 meet: the search is only trustworthy if every trial is recorded.
+
+---
+# Comparing runs in pandas
+
+```python
+runs = mlflow.search_runs(
+    experiment_names=["churn-baselines"],
+    filter_string="metrics.cv_roc_auc_mean > 0.85",
+    order_by=["metrics.cv_roc_auc_mean DESC"])
+runs[["run_id", "tags.mlflow.runName", "params.learning_rate",
+      "metrics.cv_roc_auc_mean"]].head()
+
+client = mlflow.MlflowClient()
+fold_scores = [m.value for m in client.get_metric_history(run_id, "fold_roc_auc")]
+```
+
+- `search_runs` returns a DataFrame: columns `params.*`, `metrics.*`, `tags.*`
+- Per-fold scores logged with `step=` come back with `get_metric_history`
+- Feed two runs' fold scores into the corrected t-test
+
+???
+The UI is good for browsing, but analysis belongs in code, so that the comparison itself is reproducible. `search_runs` gives you a pandas DataFrame with one row per run. For statistical comparison we need the per-fold scores, which is why we log them with a step index. The lab closes the loop: it pulls fold scores of two runs from MLflow and applies the corrected resampled t-test from Part 1.
+
+---
+# Try it: a tuning competition (15 min)
+In `lab.ipynb`, section "Try it 2":
+
+- Churn data, fixed train/test split; the test set is locked
+- Budget: at most **20 CV evaluations** (Optuna, random or halving search)
+- Log every trial to MLflow under your name as a tag
+- Report your best CV score, then unlock the test score
+- Class discussion: whose CV score was most optimistic, and did the winner by CV win on test?
+
+???
+This makes the winner's curse tangible. Collect the CV and test scores of everyone on the board; the CV scores will almost always be higher than the test scores, and the ranking by CV will differ from the ranking by test. Follow up with the question: which of the top submissions are actually different? That leads directly into the third exercise.
+
+---
+# Try it: is it significant? (10 min)
+In `lab.ipynb`, section "Try it 3":
+
+1. Use `mlflow.search_runs` to find the two best runs of the experiment
+2. Retrieve their per-fold scores with `get_metric_history`
+3. Compare them with the naive paired t-test and the corrected resampled t-test
+4. Write one sentence you would put in a paper about this comparison
+
+???
+The sentence in step 4 is the real exercise. A good answer reports the mean difference, the test used, and the p-value, and avoids claiming superiority when the test does not support it. Ask a few students to read their sentence aloud and critique them together.
+
+---
+# Good tracking practice
+
+- One experiment per research question; descriptive run names
+- Always log: **seed, Git commit, dataset digest, CV scheme**
+- Log per-fold scores, not only the mean: you need them for statistical comparison
+- Save the config, not just the result
+- Never report a number you cannot find in the tracking server
+
+**Course rule:** from Week 2 on, every notebook and homework logs to MLflow.
+
+???
+These rules apply directly to your project and research paper. The CV scheme matters because two runs can only be compared fold by fold if they used identical splits; log the splitter and its random state. For your project report, every table entry should have a run ID behind it. In Week 12 we will take the best run from here and register, serve and monitor the model.
+
+---
+class: center, middle
+
+# Questions?
+
+???
+Summarize the three answers: search efficiently with random search, successive halving or Optuna; evaluate the whole tuning procedure with nested CV; compare models with tests that respect the dependence between folds, and log everything so it can be checked. Next week we turn to interpretation and feature selection: understanding what the selected model has learned.
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (6 slides); they are not needed for the homework or the project.
+
+---
+# Evolutionary Methods: TPOT
+.center[
+![:scale 80%](images/tpot.png)
+]
+
+???
+TPOT searches over whole pipelines represented as trees, using genetic programming: pipelines are mutated and recombined, and the best survive. It can find unusual pipeline structures, but it needs many evaluations and the results can be large, hard-to-interpret pipelines. I show it mainly as a different search paradigm, not as a first recommendation.
+
+---
+class: compact, center
+# How much better than random?
+![:scale 25%](images/random_rank_chart.png)
+![:scale 25%](images/random_bar_plot_sample.png)<br>
+--
+![:scale 23%](images/random2x_cifar10-compare.png)
+![:scale 23%](images/random2x_mrbi-compare.png)
+![:scale 23%](images/random2x_svhn-compare.png)
+
+.smallest[Recht & Jamieson, argmin.net blog, 2016; data from Li et al., JMLR 2018]
+
+???
+This is a useful sanity check on Bayesian optimization. On these benchmarks, Bayesian optimization beats random search, but random search run with twice the budget is often just as good. So a good part of the gain can be bought with more compute, which is cheap and trivially parallel. The lesson is not that BO is useless, but that you should always compare against random search with an equal or doubled budget before claiming an optimizer helps.
+
+---
+class: fit2
+# Hyperband
+![:scale 90%](images/hyperband_algorithm.png)
+
+- Outer loop: brackets $s$ from aggressive (many configs, small budget) to conservative
+- Inner loop: successive halving within each bracket
+
+???
+The difference to successive halving is only the outer loop. Each value of s is one bracket, a complete run of successive halving with its own starting number of configurations and starting budget. The last bracket starts every configuration at full budget, which is just random search. So Hyperband is "successive halving with a safety net".
+
+---
+# Discretization
+
+## Are continuous parameters actually important?
+
+- Anecdotal evidence and portfolio results suggest a few well-chosen values are often enough
+
+???
+Portfolios implicitly discretize the search space, and they work well. This suggests that the fine-grained optimization of continuous parameters matters less than choosing the right region and the right model family. It is another reason to be skeptical of small reported gains from elaborate tuning.
+
+---
+# Multi-Task Bayesian Optimization
+- Build one surrogate over all datasets at the same time
+- Hard to scale with Gaussian processes
+- Neural and tree-based surrogates scale better
+
+???
+Instead of a separate surrogate per dataset, we can share information across datasets in one model. With GPs the cost grows cubically with the number of evaluations over all datasets, which becomes prohibitive. This is an active research area; for applied work, warm-starting from a portfolio captures much of the benefit.
+
+---
+class: middle
+
+Although we already reduced the space of considered ML algorithms substantially compared to our previous Auto-sklearn (4 vs. 15 classifiers), we could have reduced this set
+even further since, in the end, only XGBoost models ended up in the final ensembles for
+the challenge.
+
+.quote_author[Feurer et al., PoSH auto-sklearn]
+
+???
+This quote supports the criticism from the previous slide. For tabular data, a well-tuned gradient boosting model is usually hard to beat, and large search spaces add cost without adding much. Keep this in mind when you design the search space for your project.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

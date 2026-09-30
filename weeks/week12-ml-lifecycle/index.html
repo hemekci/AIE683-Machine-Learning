@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 12: The ML Lifecycle</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 12: The ML Lifecycle — From Model to Production
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is about what happens after the notebook. For eleven weeks we trained, validated, tuned and interpreted models; today we treat a model as something that lives in a changing world and has to be packaged, served, watched and replaced. The running example is a churn model; the lab (`lab.ipynb`) does every step on your laptop, without a server. Next week is project presentations, so today's material is also a checklist for the "deployment and monitoring" part of your project write-ups.
+
+---
+class: fit
+# A model that worked, until it did not
+
+- **Zillow Offers (2018–2021):** Zillow bought homes directly, priced with its valuation models, and resold them
+- In 2021 the housing market shifted quickly; the company bought many homes above what it could later sell them for
+- Q3 2021: an inventory write-down of **USD 304 million** (with USD 240–265 million more expected in Q4); in November 2021 the business was wound down and about a quarter of staff let go
+- Not only a modelling failure (operations, incentives, market speed), but a clear lesson:
+
+.center[**a model's accuracy is a property of the model *and* the world it is applied to**]
+
+- Closer to home: many demand, credit and fraud models broke in spring 2020, when behaviour changed overnight
+
+???
+I start with this case because it is well documented and the scale makes the point. The valuation model had good offline metrics; the environment it was applied in changed faster than anyone was measuring. I want to be careful here: the public reporting points to several causes, not a single bad model, so do not tell this as "the algorithm failed". Ask the class: what would you have needed to log to notice the problem a quarter earlier? Keep that question in mind; we answer it in the monitoring section.
+
+Source for the figures: Zillow Group Q3 2021 results and Form 8-K, 2 November 2021.
+---
+# Plan for today
+
+1. The lifecycle as a loop (15 min)
+2. Packaging: MLflow Models, signatures, trusted types (25 min)
+3. Model Registry: versions and aliases (20 min)
+4. Serving: batch vs. online, `mlflow models serve`, FastAPI (25 min)
+5. *Break*
+6. Monitoring and drift: what to log, KS, PSI, two-sample tests (35 min, **Try it 1**)
+7. Anomaly detection as a drift signal (15 min)
+8. Retraining and promotion, CI/CD for ML (25 min, **Try it 2**)
+9. Real data: a drift detective case (15 min, **Try it 3**)
+
+???
+This is the map for the three hours. The first half is mechanics: packaging, registry and serving, mostly API work you will reuse in HW4. The second half is statistics: how to decide that the world has changed, and whether a new model is really better. The three "Try it" exercises are in the lab notebook; bring your laptop open to it.
+
+Instructor demo: run the lab with `PERSIST=True` so the runs, the registered model and its aliases stay in `mlflow.db`, then open `uv run mlflow ui` and show them live. Students can keep the default (temporary tracking directory).
+
+---
+# A model is not static
+
+.center[data → train → evaluate → register → deploy → monitor → retrain → …]
+
+- The world changes: **data drift** (inputs) and **concept drift** (the input→output relation)
+- A model that scored well last month can degrade **silently**: no exception, no error log, just worse decisions
+- Production ML = a loop, not a notebook
+- Everything in the loop is **logged and versioned**: data, code, parameters, models, predictions
+
+???
+The key word is "silently". Software bugs usually crash; a stale model keeps returning numbers that look plausible. That is why we cannot rely on the usual engineering alarms and must build statistical ones. Ask: in your own project, what is the most likely way the world will change after you deploy?
+
+---
+# The lifecycle as a loop
+
+.center[![:scale 55%](images/lifecycle_loop.png)]
+
+???
+Walk around the loop once. Blue stages are development and happen in our notebooks and CI; orange stages happen in production and are new today. The centre matters: every arrow leaves a record in the tracking server or the registry, so at any time we can answer "which data and code produced the model that made this prediction?". The loop never ends; retraining produces a new version that goes around again.
+
+---
+# What goes wrong in production
+
+- **Training–serving skew:** preprocessing done in the notebook but re-implemented (differently) in the service
+- **Schema changes upstream:** a column renamed, a unit changed (TL → thousands of TL), a category added
+- **Data drift:** the population changes (new market, price change, season)
+- **Concept drift:** the same inputs now mean something else (competitor, policy, pandemic)
+- **Feedback loops:** the model's own decisions change future training data (who got a loan, who got a retention offer)
+- **Delayed or missing labels:** you learn you were wrong weeks later, or never
+
+???
+This is the "what goes wrong in practice" list, and in my experience the first two cause more incidents than drift does. Training–serving skew is why Week 3 insisted on putting preprocessing inside a `Pipeline`: the pipeline is the artifact we ship. Feedback loops are subtle: if we give retention offers to predicted churners, their future labels are no longer the labels the model was trained on. Ask the class for one example of a feedback loop from their own field.
+
+---
+class: center, middle
+
+# Packaging models: MLflow Models
+
+???
+First gap: a model others can load without our notebook. MLflow's answer is a directory format with a standard interface.
+
+---
+class: fit
+# What is an MLflow Model?
+
+A directory with a fixed layout:
+
+```
+model/
+├── MLmodel            # flavors, signature, how to load
+├── model.skops        # the fitted estimator (scikit-learn flavor)
+├── requirements.txt   # pip environment
+├── python_env.yaml / conda.yaml
+├── input_example.json
+└── serving_input_example.json
+```
+
+- **Flavors:** the same model can be loaded as `mlflow.sklearn` (native object) or `mlflow.pyfunc` (generic `predict(DataFrame)`)
+- `pyfunc` is what serving tools use: one interface for scikit-learn, XGBoost, PyTorch, custom code
+- In MLflow 3 a logged model is a first-class object with its own id: `models:/m-<id>`
+
+???
+Open one of these directories in the lab after logging; it is just files. The `MLmodel` file is YAML and human-readable, so look at it once. The pyfunc flavor is the important abstraction: serving code never needs to know which library trained the model. The `models:/m-...` URI is new in MLflow 3; in older tutorials you will see `runs:/<run_id>/model`, which still works.
+
+---
+# Signatures and input examples
+
+```python
+from mlflow.models import infer_signature
+
+with mlflow.start_run() as run:
+    model.fit(X_train, y_train)
+    signature = infer_signature(X_train, model.predict_proba(X_train.iloc[:5]))
+    info = mlflow.sklearn.log_model(
+        model, name="model", signature=signature,
+        input_example=X_train.iloc[:5],
+        pyfunc_predict_fn="predict_proba",      # serve probabilities
+        skops_trusted_types=[
+            "sklearn.ensemble._hist_gradient_boosting.predictor.TreePredictor"],
+    )
+```
+
+- A logged model = artifact + environment + **signature** (input/output schema)
+- Load anywhere: `mlflow.pyfunc.load_model(info.model_uri)`
+
+???
+The signature is the contract between the model and whoever calls it: column names and types in, shape and type out. Always log an input example as well; it documents the expected request and MLflow uses it to validate that the model can be served. `pyfunc_predict_fn="predict_proba"` makes the generic interface return probabilities, which is what we want for a churn score and for monitoring. The trusted-types argument is explained on the next slides.
+
+---
+# Schema enforcement
+
+```python
+model = mlflow.pyfunc.load_model("models:/churn-classifier@champion")
+model.metadata.get_input_schema()
+# ['tenure_months': double, 'monthly_charges': double, 'support_calls': long, ...]
+
+model.predict(X.drop(columns="support_calls"))
+# MlflowException: Failed to enforce schema ... Model is missing inputs ['support_calls']
+```
+
+- Missing columns and incompatible types fail **loudly**, before the model sees the data
+- Integer columns cannot hold missing values: if a feature may be missing in production, declare it as float at training time
+- Schema checks catch *broken* data, not *shifted* data: drift needs statistics
+
+???
+This is the first line of defence against upstream schema changes. The integer caveat is a real source of production errors: pandas turns an integer column with a missing value into float, and the schema check then rejects the request. The last bullet is the bridge to the second half: a schema check passes happily when every customer's bill has gone up by 20%.
+
+---
+# Model files are code: trusted types
+
+- Pickle files can execute arbitrary code when loaded
+- MLflow 3 saves scikit-learn models with **skops**, which refuses unknown types by default
+- Some estimators (e.g. `HistGradientBoosting*`) need their internal types listed explicitly:
+  `skops_trusted_types=[...]`
+- Only trust types for models **you** produced; never load model files from unknown sources
+- Pin the environment: `pip_requirements=[...]` or let MLflow infer it (in a uv project it exports the lock file)
+
+???
+Emphasize the security point: loading a pickled model from the internet is the same as running a script from the internet. skops keeps an allowlist of safe types; the error you get without `skops_trusted_types` is a feature, not a bug. The environment files matter for reproducibility: the model must be served with the library versions it was trained with. In the lab we pin three packages explicitly to keep logging fast.
+
+---
+class: center, middle
+
+# Model Registry: versions and aliases
+
+???
+Second gap: a stable name for "the model in production". That is what the registry provides.
+
+---
+class: fit
+# Registering a model
+
+```python
+mv = mlflow.register_model(info.model_uri, "churn-classifier")    # → version 1, 2, ...
+
+client = mlflow.MlflowClient()
+client.set_registered_model_alias("churn-classifier", "champion", mv.version)
+client.set_model_version_tag("churn-classifier", mv.version, "trained_on", "month 0")
+
+model = mlflow.pyfunc.load_model("models:/churn-classifier@champion")
+client.get_model_version_by_alias("churn-classifier", "champion").version   # → "1"
+```
+
+- Every registered model has numbered, immutable **versions**, each linked to the run that produced it
+- **Aliases** (`champion`, `challenger`) are movable pointers; **tags** carry metadata (validation status, data window)
+- The fixed stages "Staging / Production" of older MLflow versions are deprecated: use aliases
+
+???
+A version never changes; an alias is a pointer we move. This separation is the whole idea: serving code refers to `@champion`, and promotion means moving the pointer, not redeploying code. Many tutorials online still use `transition_model_version_stage` with "Staging" and "Production"; that API is deprecated, so do not use it in HW4. Ask: why is it useful that each version links back to its training run?
+
+---
+class: fit
+# Promotion is moving a pointer
+
+.center[![:scale 85%](images/registry_aliases.png)]
+
+- Rollback = move the alias back: `set_registered_model_alias(name, "champion", old_version)`
+- Old versions stay available for audits: "which model made this decision in March?"
+
+???
+Point at the two panels: nothing is copied or rebuilt, only the green label moves. Rollback is the same single call in the other direction, which is exactly why we never delete the previous champion right after a promotion. The audit question matters in regulated settings such as credit scoring: you must be able to reproduce the exact decision a model made months ago.
+
+---
+class: center, middle
+
+# Serving
+
+???
+Third gap: answering requests. There are two very different ways to use a model, and the choice drives most of the engineering.
+
+---
+# Batch vs. online inference
+
+.center[![:scale 95%](images/batch_vs_online.png)]
+
+- **Batch:** score a table on a schedule (nightly churn scores for the retention team); simple, cheap, easy to re-run
+- **Online:** score each request as it arrives (fraud check at payment time); needs low latency, high availability
+- Choose batch unless someone needs the answer **before** the next batch run
+
+???
+Students often assume "deployment" means a REST API. Most business models are batch: a nightly job writes scores into a table and other systems read it. Batch is easier to monitor and to re-run when something goes wrong. Online serving is needed when the decision is made during an interaction. Ask: for your project, which one fits?
+
+---
+# Built-in REST server
+
+```bash
+mlflow models serve -m "models:/churn-classifier@champion" -p 5001 --env-manager local
+```
+
+```bash
+curl -X POST http://127.0.0.1:5001/invocations \
+  -H "Content-Type: application/json" \
+  -d '{"dataframe_records": [{"tenure_months": 12.0, "monthly_charges": 80.5,
+       "support_calls": 2, "num_products": 1, "contract_yearly": 0, "age": 35.0}]}'
+```
+
+- Endpoints `/invocations` (also accepts `dataframe_split`, `inputs`) and `/ping`
+- `--env-manager local` reuses the current environment; the default builds the model's own environment
+- `mlflow models build-docker -m ... -n churn-service` packages the same server as a container image
+
+???
+This is the zero-code option and is fine for demos and internal tools. Point out that the payload is validated against the signature we logged. The Docker build is how you would hand the model to an operations team. We do not run a server in class; the lab uses FastAPI's test client instead, which exercises the same logic in-process.
+
+---
+class: fit2
+# Your own API with FastAPI
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+
+class Customer(BaseModel):
+    tenure_months: float = Field(ge=0)
+    monthly_charges: float = Field(ge=0)
+    support_calls: int = Field(ge=0)
+    num_products: int = Field(ge=1)
+    contract_yearly: int = Field(ge=0, le=1)
+    age: float = Field(ge=18)
+
+def create_app(name: str, alias: str = "champion") -> FastAPI:
+    version = client.get_model_version_by_alias(name, alias).version
+    model = mlflow.pyfunc.load_model(f"models:/{name}/{version}")   # load once
+    app = FastAPI()
+
+    @app.post("/predict")
+    def predict(customers: list[Customer]) -> dict:
+        X = pd.DataFrame([c.model_dump() for c in customers])[FEATURES]
+        proba = model.predict(X)[:, 1]
+        log_predictions(X, proba, version)            # see "monitoring"
+        return {"model_version": version, "churn_probability": proba.tolist()}
+    return app
+```
+
+???
+Why write our own API when MLflow has one? Because we want domain validation (a contract flag must be 0 or 1, age at least 18), our own response format, and prediction logging in one place. Note that the model is loaded once when the app is created, not per request; loading per request is a classic latency bug. Returning the model version in every response makes debugging much easier for whoever calls the service.
+
+---
+# Testing the API without a server
+
+```python
+from fastapi.testclient import TestClient
+
+api = TestClient(create_app("churn-classifier"))
+
+r = api.post("/predict", json=[{"tenure_months": 12.0, "monthly_charges": 80.5,
+                                "support_calls": 2, "num_products": 1,
+                                "contract_yearly": 0, "age": 35.0}])
+assert r.status_code == 200 and "churn_probability" in r.json()
+
+r = api.post("/predict", json=[{..., "contract_yearly": 3}])
+assert r.status_code == 422          # rejected by pydantic, model never called
+```
+
+- The same tests run in CI on every commit
+- Test the contract: valid input → 200, invalid → 422, response contains the version
+
+???
+`TestClient` calls the app in-process, so this works in a notebook and in a CI job without opening ports. These are ordinary unit tests and belong in your repository next to the model code. Ask: what other test would you add? Good answers include a test that the loaded model's signature matches the pydantic schema, and a latency test on a batch of requests.
+
+---
+# Serving checklist
+
+- Load the model **once**; resolve the alias at startup; report the version (`/health`)
+- Validate inputs twice: domain rules (pydantic) and schema (MLflow signature)
+- Ship preprocessing **inside** the model (`Pipeline`), never re-implement it in the service
+- Measure latency and throughput; batch requests when possible
+- Log every prediction (next section)
+- Plan how a new version is picked up: restart, reload endpoint, or a new deployment
+
+???
+This slide summarises the serving part and is a good checklist for the project. The last point is often forgotten: our app resolves the alias at startup, so after moving `@champion` the service must be restarted or redeployed to pick up the new version. In larger systems a deployment tool does this; the principle is the same.
+
+---
+class: center, middle
+
+# Monitoring and drift
+
+???
+After the break: the statistical half. Fourth gap: evidence that the model still works next month.
+
+---
+# What to log in production
+
+| What | Why |
+|---|---|
+| Request id, timestamp | join with labels later; debugging |
+| Model name + **version** | which model made this decision |
+| Input features (as received) | drift detection, reproducing a prediction |
+| Output: score, class, threshold used | prediction drift, audits |
+| Latency, errors, rejected requests | service health |
+| Label when it arrives (delayed) | real performance over time |
+| Data/feature pipeline version | find upstream changes |
+
+- Respect privacy: log only what you are allowed to keep; hash or drop identifiers
+- In the lab the log is a list; in production a table, a message queue or an MLflow trace store
+
+???
+This table is the answer to the Zillow question from the start: without logged inputs, outputs and versions you cannot even ask whether the world changed. The join key between predictions and later labels is the request id, so generate one per request. The privacy line is not optional: personal data law (KVKK in Türkiye, GDPR in Europe) limits what you may store and for how long. Ask: which of these rows would you not be allowed to log in a medical application?
+
+---
+# Logging predictions
+
+```python
+PREDICTION_LOG = []
+
+def log_predictions(X, proba, version):
+    request_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    for row, p in zip(X.to_dict("records"), proba):
+        PREDICTION_LOG.append({**row, "churn_score": float(p), "model_version": version,
+                               "request_id": request_id, "timestamp": now})
+
+# a monitoring job, e.g. once per month:
+with mlflow.start_run(run_name="monitoring"):
+    mlflow.log_metrics(drift_metrics, step=month)
+    mlflow.log_table(pd.DataFrame(PREDICTION_LOG), artifact_file="prediction_log.json")
+```
+
+???
+The service only appends; the analysis happens in a separate monitoring job that reads the log, compares it with the reference data, and writes metrics. Logging drift metrics with `step=month` gives you time-series plots in the MLflow UI for free. Keeping the service simple and the analysis offline is a good default: the service must be fast, the monitoring job can be slow and careful.
+
+---
+# Kinds of change
+
+Write the joint distribution as `$P(X, y) = P(y \mid X)\,P(X)$`.
+
+- **Data drift / covariate shift:** `$P(X)$` changes, `$P(y \mid X)$` stays
+  *prices rise, more support calls*
+- **Label (prior) shift:** `$P(y)$` changes, `$P(X \mid y)$` stays
+  *a disease becomes more common*
+- **Concept drift:** `$P(y \mid X)$` changes
+  *a competitor now targets loyal customers: the same customer is riskier*
+
+Over time, change can be **sudden** (policy change), **gradual** (inflation), or **recurring** (seasons).
+
+???
+The factorization makes the vocabulary precise; many blog posts use "data drift" for everything. Covariate shift can hurt even when the relation is stable, because the model extrapolates into regions with little training data. Concept drift is the dangerous one, because it cannot be seen from inputs alone. Recurring drift is a trap for monitoring, and we will see it on real data at the end.
+
+---
+# Data drift vs. concept drift
+
+.center[![:scale 95%](images/data_vs_concept_drift.png)]
+
+???
+Left: the training data and the learned boundary. Middle: the points moved, but the true boundary is the same; the model may still be fine where it has data and unreliable where it extrapolates. Right: the points did not move at all, but the true boundary rotated; every input statistic looks perfect while accuracy collapses. Ask the class: which of the two can you detect without labels? Only the middle one.
+
+---
+class: fit3
+# The two-sample KS test
+
+.center[![:scale 55%](images/ks_test.png)]
+
+`$$D = \sup_x \left| F_{\text{ref}}(x) - F_{\text{live}}(x) \right|$$`
+
+```python
+from scipy.stats import ks_2samp
+res = ks_2samp(X_train["monthly_charges"], X_live["monthly_charges"])
+res.statistic, res.pvalue
+```
+
+???
+KS compares empirical CDFs; the statistic is the largest vertical gap, and it works for any continuous feature without binning. It is univariate: one test per feature, which misses changes in correlations. For discrete features with many ties it is conservative; use a chi-squared test there. The next slide is the main caveat.
+
+---
+# Statistical vs. practical significance
+
+- With thousands of rows per day, the KS test rejects for **tiny** shifts: `$p$`-values of `$10^{-25}$` are routine
+- With 20 features tested daily, some tests reject by chance (`$\alpha = 0.05$` → about one false alarm a day)
+- Monitor the **effect size** (`$D$`, PSI) and alert on a threshold that matters for the business
+- Calibrate thresholds on **reference data**: how large is the statistic when nothing changed?
+
+???
+This is the same point we made in Week 8 about comparing models: a significant difference is not necessarily an important one. In the lab simulation every month after the first has a `$p$`-value of essentially zero for the charges feature, so the `$p$`-value carries no information about *how much* changed. Multiple testing is real: if you test many features every day, you need a correction or, more practically, thresholds calibrated on no-drift data. Try it 1 does exactly that calibration.
+
+---
+class: fit
+# Population Stability Index (PSI)
+
+Bin the reference data (e.g. deciles), compute the share of rows per bin: `$p_i$` (reference), `$q_i$` (live).
+
+`$$\mathrm{PSI} = \sum_{i=1}^{B} (q_i - p_i)\,\ln\frac{q_i}{p_i}$$`
+
+- A symmetrised KL divergence: `$\mathrm{KL}(q\,\|\,p) + \mathrm{KL}(p\,\|\,q)$` on the binned distributions
+- Usual rule of thumb: < 0.1 stable, 0.1–0.25 moderate shift, > 0.25 large shift
+- Clip empty bins (`$q_i = 0$`) to a small `$\varepsilon$`; use one bin per value for discrete features
+- Depends on the number of bins and the sample size: the rule of thumb is a convention, not a law
+
+???
+PSI comes from credit scoring, where it has been used for decades to watch score distributions, and it is still the most common drift number in industry dashboards. Show that each term is non-negative, because `$q_i - p_i$` and `$\ln(q_i/p_i)$` always have the same sign. The thresholds are folklore; they are reasonable for decile bins and a few thousand rows, and misleading otherwise. We compute a calibrated threshold in Try it 1.
+
+---
+# Worked example: PSI by hand
+
+.center[![:scale 80%](images/psi_worked_example.png)]
+
+| bin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `$p_i$` | .10 | .10 | .10 | .10 | .10 | .10 | .10 | .10 | .10 | .10 |
+| `$q_i$` | .05 | .06 | .07 | .08 | .09 | .10 | .11 | .13 | .14 | .17 |
+
+Bin 1: `$(0.05-0.10)\ln(0.05/0.10) = 0.035$` ... bin 10: `$0.07 \ln 1.7 = 0.037$`. **PSI = 0.131**: moderate shift.
+
+???
+Do bins 1 and 10 on the board, then let students check one middle bin. Deciles of the reference give `$p_i = 0.1$` by construction, which makes the arithmetic easy. The contributions come from the tails: the live distribution has moved to the right, emptying the low bins and filling the high ones. This is the typical signature of a location shift, such as a price increase.
+
+---
+# Classifier two-sample test
+
+Can a classifier tell reference rows from live rows?
+
+```python
+X = pd.concat([X_ref_sample, X_live_sample])
+y = np.r_[np.zeros(len(X_ref_sample)), np.ones(len(X_live_sample))]
+auc = cross_val_score(HistGradientBoostingClassifier(), X, y,
+                      cv=5, scoring="roc_auc").mean()
+```
+
+- AUC ≈ 0.5: indistinguishable. AUC → 1: strong drift
+- **Multivariate:** catches changes in correlations that per-feature tests miss
+- Feature importances of the drift classifier (Week 9) show *which* features moved
+- Same idea as "adversarial validation" for checking train/test splits
+
+???
+This turns drift detection into a supervised problem we already know how to solve and evaluate. The cross-validated AUC is an effect size with a natural scale. The interpretation trick is useful in practice: permutation importance of the drift classifier points you to the features that changed. Students who have done Kaggle may know this as adversarial validation.
+
+---
+# Monitoring the model's output
+
+- **Prediction drift:** PSI of the score distribution: cheap, no labels needed, one number per model
+- **Calibration drift:** mean predicted probability vs. observed rate once labels arrive
+- **Performance drift:** AUC, Brier score, business metric on labeled data, by time window
+- Labels are often **delayed** (churn: 30–90 days; credit default: months): performance is a lagging signal, input drift a leading one
+- Proxy labels can help (complaints, early payments), but they are proxies
+
+???
+Input drift tells you the model might be in trouble; performance tells you it is. Because labels arrive late, you need both: the leading indicator to start investigating, the lagging one to decide. Calibration is easy to forget; in the lab the model's ranking (AUC) degrades moderately, but its probabilities become badly wrong, which matters if a business rule uses a probability threshold (Week 7).
+
+---
+# Worked drift example: the simulation
+
+.center[![:scale 100%](images/monitoring_dashboard.png)]
+
+- Built in: prices +3 per month and more support calls (data drift); from month 4 a competitor targets loyal customers (concept drift)
+- Input signals rise **smoothly**; the concept drift shows only in AUC and calibration
+
+???
+This is the lab's simulated churn problem, and the reason we simulate is that we know the truth. Left: PSI of the drifting features climbs past 0.25 by month 3, while age, which does not drift, stays flat. Middle and right: at month 4 AUC drops from about 0.78 to about 0.65 and the observed churn rate jumps to over 50% while the model still predicts around 20%. No input statistic shows a jump at month 4. Ask: if you had only the left panel, when would you have retrained?
+
+---
+# Worked drift example: the numbers
+
+| month | PSI charges | KS `$p$` charges | C2ST AUC | IsolationForest outlier rate | live AUC | churn rate / mean score |
+|---|---|---|---|---|---|---|
+| 1 | 0.05 | < 1e-4 | 0.54 | 1.4% | 0.76 | 0.12 / 0.12 |
+| 2 | 0.14 | < 1e-4 | 0.58 | 3.0% | 0.78 | 0.13 / 0.15 |
+| 3 | 0.32 | < 1e-4 | 0.63 | 4.2% | 0.78 | 0.15 / 0.16 |
+| 4 | 0.60 | < 1e-4 | 0.71 | 4.8% | 0.64 | 0.52 / 0.18 |
+| 5 | 0.81 | < 1e-4 | 0.76 | 6.7% | 0.67 | 0.54 / 0.21 |
+| 6 | 1.26 | < 1e-4 | 0.82 | 9.4% | 0.65 | 0.58 / 0.24 |
+
+Reference: validation AUC 0.79, outlier rate 2% by construction.
+
+???
+These are the numbers the lab produces, logged to MLflow with one step per month. The KS `$p$`-value column is useless for deciding anything: it is below `$10^{-4}$` from month 1. PSI, the two-sample AUC and the outlier rate all grow with the size of the shift and are usable effect sizes. The last two columns carry the concept drift. Point out that the model kept a reasonable ranking in months 1–3 despite large PSI: data drift does not always hurt.
+
+---
+# Try it 1: calibrate your PSI alarm (10–15 min)
+
+The 0.1 / 0.25 thresholds are folklore. How large is PSI when **nothing** changed?
+
+1. **Predict first:** for 2000 customers drawn from the *reference* distribution, what PSI on `monthly_charges` do you expect? Write a number down.
+2. In `lab.ipynb`, section *Try it 1*: draw 200 "no-drift months", compute PSI against `X_train`
+3. Take the 99th percentile as your threshold. When does `monthly_charges` first cross it? And the 0.1 rule?
+4. Repeat with `n_bins=20` and with months of 500 customers
+
+???
+Give them ten minutes, then collect a few predictions on the board before revealing the answer. With 2000 rows and 10 bins the no-drift PSI is around 0.007 and the 99th percentile about 0.016, far below 0.1, so the calibrated alarm fires in month 1 while the rule of thumb waits until month 2. Discuss the trade-off: the calibrated threshold detects any real shift, but the real question is whether the shift is large enough to matter, which is a business decision. Smaller samples and more bins both raise the noise floor.
+
+---
+class: center, middle
+
+# Anomaly detection as a drift signal
+
+???
+A different angle on the same question: instead of comparing distributions, ask for each new input whether it looks like anything we trained on.
+
+---
+# Novelty detection on live inputs
+
+```python
+from sklearn.ensemble import IsolationForest
+
+detector = IsolationForest(contamination=0.02, random_state=0).fit(X_train)
+baseline = (detector.predict(X_val) == -1).mean()          # about 2% on reference data
+outlier_rate = (detector.predict(X_live) == -1).mean()
+mlflow.log_metric("live_outlier_rate", outlier_rate, step=month)
+```
+
+- Fit on reference data; flag live inputs unlike anything seen before (`predict` returns −1)
+- Rising outlier rate → the model is **extrapolating** → investigate / retrain
+- Per-row flags are also useful online: route unusual requests to a fallback or a human
+- **IsolationForest:** random splits isolate unusual points in few steps; short average path length = anomaly
+
+???
+Here the task is novelty detection: the training data is assumed clean and we score new points. Always measure the baseline rate on held-out reference data; `contamination` sets it only approximately. The per-row use is often more valuable than the aggregate rate: a request that looks nothing like the training data should not get a confident automated decision. IsolationForest scales well and needs almost no tuning, which is why it is the usual first choice.
+
+---
+# Other detectors
+
+```python
+from sklearn.neighbors import LocalOutlierFactor
+from sklearn.svm import OneClassSVM
+from sklearn.covariance import EllipticEnvelope
+
+lof = make_pipeline(StandardScaler(),
+                    LocalOutlierFactor(n_neighbors=35, contamination=0.02, novelty=True))
+ocsvm = make_pipeline(StandardScaler(), OneClassSVM(nu=0.02, gamma="scale"))
+robust = EllipticEnvelope(contamination=0.02)      # Gaussian, robust covariance
+```
+
+- **LocalOutlierFactor:** compares local density with the neighbours' density; `novelty=True` is required to call `predict` on **new** data
+- **OneClassSVM:** RBF boundary around the data, `nu` ≈ fraction of training points outside
+- **EllipticEnvelope:** fast and interpretable if the data is roughly Gaussian
+- Distance- and kernel-based methods need scaling (Week 3)
+
+???
+The `novelty=True` flag is a common pitfall: without it, LOF only offers `fit_predict` on the training data itself, which is outlier detection, not novelty detection. OneClassSVM relates to the SVMs of Week 4: `nu` bounds the fraction of training points outside the boundary. All three except IsolationForest are sensitive to feature scales, hence the pipelines.
+
+---
+# Comparing the detectors
+
+.center[![:scale 100%](images/anomaly_detectors.png)]
+
+???
+All three are fitted on the grey reference points, two clusters, and then score new points: green are accepted, orange crosses flagged. IsolationForest produces an axis-aligned, somewhat blocky region; LOF follows local density and handles the two clusters of different spread; the RBF OneClassSVM gives a smooth boundary. In the lab all three give very similar monthly outlier rates, so for monitoring the choice matters less than having a calibrated baseline.
+
+---
+class: center, middle
+
+# Retraining and promotion
+
+???
+Fifth gap: a safe procedure for replacing the model.
+
+---
+# When and how to retrain
+
+- **Triggers:** schedule (monthly), drift alarm, performance drop, new data source
+- **Training window:**
+  - *sliding*: last `$k$` months only: adapts fast, less data
+  - *expanding*: everything so far: more data, remembers the old regime
+  - *weighted*: everything, recent data up-weighted (`sample_weight`)
+- Retrain = the **same pipeline code** on new data, logged as a new run, registered as a new version
+- Keep a fresh, **untouched** labeled window for the comparison
+
+???
+A schedule is the simplest trigger and often good enough; drift-based triggers save compute but need well-calibrated alarms. The window choice depends on the kind of drift: after a concept change old data is actively misleading, after seasonal drift old data from the same season is valuable. The last bullet is the Week 2 lesson again: the comparison data must not be used for training either model.
+
+---
+class: fit
+# Champion vs. challenger
+
+```python
+champion   = mlflow.pyfunc.load_model("models:/churn-classifier@champion")
+challenger = mlflow.pyfunc.load_model("models:/churn-classifier@challenger")
+p_a, p_b = champion.predict(X_new)[:, 1], challenger.predict(X_new)[:, 1]
+
+diffs = []
+for _ in range(1000):                               # paired bootstrap
+    idx = rng.integers(0, len(y_new), len(y_new))
+    diffs.append(roc_auc_score(y_new[idx], p_b[idx]) - roc_auc_score(y_new[idx], p_a[idx]))
+lo, hi = np.percentile(diffs, [2.5, 97.5])
+
+if lo > 0 and brier_score_loss(y_new, p_b) <= brier_score_loss(y_new, p_a):
+    client.set_registered_model_alias("churn-classifier", "champion", challenger_version)
+```
+
+- Same fresh data for both, a **pre-registered** decision rule, the result logged as a run
+- Lab result (month 6): AUC 0.648 → 0.698, 95% CI of the difference [0.032, 0.069], Brier 0.349 → 0.216: **promote**
+
+???
+This is Week 8's statistical comparison applied to a deployment decision. The bootstrap is paired: both models are scored on the same resampled customers, which removes the variance due to which customers happen to be in the sample. Fix the rule before looking at the numbers; otherwise it is easy to talk yourself into promoting. In the lab the challenger, trained on months 4–5, wins clearly on month 6, mostly through much better calibration.
+
+---
+# Try it 2: which retraining window wins? (10–15 min)
+
+1. **Predict first:** rank *sliding* (months 4–5), *expanding* (months 0–5) and *weighted* (months 0–5, recent × 5) by AUC on month 6
+2. In `lab.ipynb`, section *Try it 2*: complete the `windows` dictionary and run; each option is logged as an MLflow run
+3. Compare AUC **and** Brier score. Are the AUC differences larger than the bootstrap CI from the previous slide?
+4. When would the expanding window be the better choice?
+
+???
+Most students predict that more data wins. In the lab the sliding window is best (AUC about 0.70, Brier 0.22), weighted is close, and expanding is clearly worse on Brier (0.27) because five of its six months come from the old regime. The AUC differences between sliding and weighted are within noise, so the honest conclusion is "sliding or weighted, not expanding". The expanding window wins when the change is data drift into regions that old data also covers, or when drift is seasonal.
+
+---
+class: fit
+# Deploying a new version safely
+
+.center[![:scale 95%](images/deployment_strategies.png)]
+
+- **Shadow:** challenger scores live traffic, answers are only logged; zero risk
+- **Canary:** a small share of users gets the challenger; roll back on problems
+- **A/B test:** a randomized comparison on a business metric; needs a sample-size plan
+- In every case: log the version with each prediction, keep rollback one call away
+
+???
+Offline comparison on last month's labels is necessary but not sufficient, because the live environment can differ from the evaluation data. Shadow mode is the easiest to add to our FastAPI app: call both models, return the champion's answer, log both. A/B testing is a statistics topic in its own right; the main pitfall is stopping the test as soon as the difference looks significant. For HW4, shadow or offline comparison is enough.
+
+---
+# CI/CD for ML
+
+.center[![:scale 100%](images/cicd_pipeline.png)]
+
+- Version everything: code (Git), environment (`uv.lock`), data (dataset digests via `mlflow.log_input`), models (registry)
+- Automated checks: unit tests, API contract tests, data validation (schema, ranges), training smoke test on a sample
+- Automate up to `@challenger`; keep a **human approval** before moving `@champion` for important models
+
+???
+Continuous integration for ML tests more than code: it checks the data and that training still runs end to end on a small sample. Continuous delivery ends at the registry: the pipeline registers a challenger with its evaluation logged, and a person or a policy moves the alias. You do not need a specific CI product for this course; the steps are what matter, and a GitHub Actions workflow running `uv run pytest` is a fine start.
+
+---
+class: center, middle
+
+# Real data: a drift detective case
+
+???
+The simulation showed the mechanics with known ground truth. Now real data, where nobody tells us the answer.
+
+---
+class: fit
+# Bike sharing: train on 2011, deploy in 2012
+
+.center[![:scale 90%](images/bike_seasonal_drift.png)]
+
+- Capital Bikeshare (Washington, D.C.), hourly rentals, the Week 11 dataset; `HistGradientBoostingRegressor` on weather and calendar features
+- **Orange:** each 2012 month vs. all of 2011: PSI > 1 every month. **Blue:** vs. the same month of 2011
+- Right: the model **under-predicts** by 40–120 rentals per hour, all year
+
+???
+This is the common pitfall in its natural habitat. Comparing a summer month with a whole year always shows huge temperature drift; that is seasonality, known in advance, and an alarm on it is noise. The seasonally matched comparison in blue is mostly quiet, with a few genuinely unusual months. Meanwhile the real problem, systematic under-prediction, is invisible in every input statistic, because demand grew: the system simply became more popular in its second year. Do not reveal all of this before Try it 3; let them find it.
+
+---
+# Try it 3: drift detective (10–15 min)
+
+In `lab.ipynb`, Part B:
+
+1. Add `psi_temp_same_month`: PSI of each 2012 month against the **same month of 2011**. Which alarms remain?
+2. Add `bias` = mean(actual − predicted) per month (labels arrive a day later: realistic)
+3. Decide: data drift, concept drift, or both? *Hint:* compare mean rentals in 2011 and 2012 for the same weather
+4. Log your monthly report to MLflow as a run `bike-monitoring`, one step per month
+5. What would you do: retrain on a sliding window, add a trend feature, or model growth separately?
+
+???
+Let them work in pairs and then ask two or three pairs for their diagnosis. The expected answer: the temperature "drift" is mostly seasonality; the real change is in `$P(y \mid X)$`: for the same weather, 2012 demand is roughly 60% higher (for clear weather, about 155 vs. 254 rentals per hour). That is concept drift, or equivalently a missing trend feature, which links back to the Week 11 discussion of trends in forecasting. Any of the three remedies in point 5 is defensible if the student can say how they would evaluate it.
+
+---
+# HW4: the full loop
+
+1. Train a forecasting model (Week 11) and track it with MLflow
+2. Register it, set `@champion`, and serve it (batch job or FastAPI app with tests)
+3. Log predictions; feed it later or shifted data; detect the drift with calibrated signals and log them
+4. Retrain, compare challenger vs. champion with a pre-registered rule and uncertainty, promote or not, and justify
+
+Due in Week 13. Submit the notebook, the exported MLflow runs, and a short report.
+
+???
+HW4 was released last week and is exactly today's loop on a forecasting problem. The lab notebook is a working template, so start from it. Grading focuses on the evidence: are the drift thresholds calibrated, is the comparison fair and uncertain, is the decision logged. Questions about HW4 are welcome in office hours on Thursday.
+
+---
+# Summary
+
+- A model in production is a **loop**: package → register → serve → monitor → retrain → promote
+- **MLflow Models** give a portable artifact with a signature; **skops** trusted types keep loading safe
+- The **registry** separates immutable versions from movable aliases; promotion and rollback are one call
+- **Log every prediction** with the model version; join labels later
+- Drift: KS, **PSI**, classifier two-sample test, outlier rates; use effect sizes and **calibrated** thresholds
+- Input drift is a leading signal; only labels reveal **concept drift**
+- Promote with the same statistical care as any model comparison, and keep rollback ready
+
+???
+If students remember one thing: log the version with every prediction, and decide with calibrated evidence rather than folklore thresholds. Next week is project presentations; include a short section on how your model would be monitored and when you would retrain it. Thank you, and see you next week.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (4 slides); they are not needed for the homework or the project.
+
+---
+# Where we are
+
+- Weeks 2–11: generalization, pipelines, model families, evaluation, tuning, interpretation, unsupervised learning, forecasting
+- Since Week 2 every experiment was **tracked** in MLflow (Week 8: runs, parameters, metrics, comparisons)
+- What is still missing:
+  - a model others can **load** without our notebook
+  - a **stable name** for "the model in production"
+  - a way to **answer requests**
+  - evidence that the model **still works** next month
+  - a **safe procedure** for replacing it
+
+???
+Tracking answers "what did I try and how well did it do". It does not answer "which model is live, what is it seeing, and is it still right". Those are the five gaps on this slide, and each section today closes one of them. A common misconception is that MLOps is mostly about infrastructure; for us it is mostly about evidence and bookkeeping.
+
+---
+# Batch scoring
+
+```python
+model = mlflow.pyfunc.load_model("models:/churn-classifier@champion")
+version = client.get_model_version_by_alias("churn-classifier", "champion").version
+
+scores = model.predict(customers[FEATURES])[:, 1]
+out = customers.assign(churn_score=scores, model_version=version,
+                       scored_at=pd.Timestamp.now(tz="UTC"))
+out.to_parquet("scores/2026-11-30.parquet")
+```
+
+- Resolve the alias **once** and store the concrete version with every score
+- Log the batch job itself as an MLflow run (input size, model version, score summary)
+
+???
+The key habit is writing the model version next to each score. Without it, if the champion moves halfway through a month, you cannot tell which scores came from which model. Logging the batch job as a run gives you a time series of "mean score per batch", which is already a useful monitoring signal.
+
+---
+# Alerts that people do not ignore
+
+- Few signals, each with a **calibrated** threshold and an **owner**
+- Aggregate over a window (a week, a month), not per request
+- Alert on persistent change (two consecutive windows), not on a single spike
+- Separate "investigate" (input drift, outlier rate) from "act" (performance drop with labels)
+- Account for **known seasonality**: compare with the same period last year, not with the whole year
+- Every alert should lead to a documented decision: ignore, retrain, roll back, fix upstream
+
+???
+Alert fatigue is how monitoring dies: after the third false alarm nobody reads the emails. The seasonality point is exactly what Try it 3 shows on real data. The last point connects to the registry: a decision to retrain or not is itself something to log, for example as a tag on a monitoring run.
+
+---
+# Reproducibility is the foundation
+
+- Same code + same data + same environment + same seed ⇒ same model
+- Record per run: Git commit, `uv.lock`, dataset digest, parameters, random seeds
+- Every production prediction → model version → training run → data + code
+- If you cannot rebuild the current champion, you cannot safely replace it
+
+???
+Everything in the loop depends on this. The chain on the third line is what makes an incident investigation possible: from a bad prediction back to the data and code that produced the model. Ask the class to check their project repositories against this list this week; it is also part of how I will read your project reports.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

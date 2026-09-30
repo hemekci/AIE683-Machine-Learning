@@ -1,0 +1,2234 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 1: Introduction & Tooling</title>
+    <meta charset="utf-8">
+    <style>
+    </style>
+    <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 1: Introduction & Tooling
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Welcome to AIE683. The goal of this course is to give you the hands-on
+knowledge needed to apply machine learning to real problems, and to turn
+that work into a research paper by the end of the term.
+
+---
+# Logistics
+
+.larger[
+- **Lectures:** Thursdays 08:40–11:40
+- **Office hours:** Thursdays 12:00–13:00 and 16:00–17:00
+- **Email:** hakanemekci@hacettepe.edu.tr
+- **Materials:** https://github.com/hemekci/AIE683-Machine-Learning
+]
+
+???
+We meet once a week for a three-hour session with breaks. All slides and notebooks are in the GitHub repository; clone it today and pull before every lecture, because I update the material during the term. Office hours are right after the lecture and in the afternoon. For anything that concerns your project, come to office hours rather than writing a long email; it is faster for both of us.
+
+---
+# Assessment
+
+.larger[
+| Component | Weight |
+|---|---|
+| Paper proposal | 10% |
+| Homework assignments | 20% |
+| Project & research paper | 70% |
+]
+
+The project is a research paper: proposal → progress report → presentation → final paper with code.
+
+???
+There are no exams in this course. There are four homeworks, and most of the grade comes from the project, which you will write up as a research paper. The proposal comes early, so start thinking now about a dataset and a question you care about. Ask yourself: what would a convincing baseline be, and how would you measure improvement? We will return to exactly these questions later today.
+
+---
+# Academic Integrity
+
+- Homeworks and projects are checked for plagiarism
+- Copied work results in 0 points for everyone involved
+- You may reuse code from the course slides and notebooks without citation
+- Cite every other external source (papers, blog posts, Stack Overflow, tutorials)
+- Using LLM assistants is allowed; you must state how you used them and you are responsible for every line you submit
+
+???
+Reusing code from the course material is fine and expected. Everything else you take from outside must be cited, and that includes code. LLM assistants are allowed, but you have to describe how you used them, and you must be able to explain every line you submit. If you cannot explain it in office hours, treat it as not your work.
+
+---
+class: fit
+# Acknowledgments
+
+.larger[
+The lecture slides and notebooks of this course build on
+**Andreas C. Müller's *Applied Machine Learning* course**
+(Columbia University, COMS W4995, Spring 2019–2020),
+released under the CC0 license:
+]
+
+- Slides and code: https://github.com/amueller/COMS4995-s20
+- Online book: https://amueller.github.io/aml
+- Textbook: A. C. Müller, S. Guido, *Introduction to Machine Learning with Python*, O'Reilly
+
+The material has been reorganized, updated to current library versions, and extended with new content (experiment tracking, the ML lifecycle, time series).
+
+???
+Much of what we use in this course builds on Andreas Müller's openly published Applied Machine Learning course. He released the slides and notebooks under CC0, which lets us reuse and adapt them freely; I want to acknowledge that explicitly. His online book is a good companion reading for most weeks.
+
+---
+# Course Tooling
+
+.larger[
+- **uv**: Python environments and dependencies (`uv sync`)
+- **Git & GitHub**: version control for code and papers
+- **Jupyter**: notebooks for experiments
+- **MLflow**: experiment tracking; from Week 2 on, every notebook and homework logs its runs
+]
+
+```bash
+uv sync
+uv run mlflow ui        # http://127.0.0.1:5000
+```
+
+???
+These four tools are the working environment for the whole course. `uv sync` creates the exact environment recorded in the repository's lock file, so all of us run the same library versions. From next week on, every notebook logs its experiments to MLflow, and `uv run mlflow ui` lets you browse and compare runs in the browser. We cover uv and Git in the second part of today's lecture; please have both installed before next week.
+
+---
+# Books
+
+.center[
+![:scale 25%](images/imlp.png)&nbsp;&nbsp;&nbsp;
+![:scale 25%](images/apm.png)&nbsp;&nbsp;&nbsp;
+![:scale 25%](images/esl.png)
+
+
+http://ciml.info/]
+
+???
+Three books go well with this course. *Introduction to Machine Learning with
+Python* by Müller and Guido is short and practical and matches our scikit-learn
+workflow. *Applied Predictive Modeling* by Kuhn and Johnson goes deeper and is
+close to the level of this course. *The Elements of Statistical Learning* by
+Hastie, Tibshirani and Friedman gives the theoretical view and is free on the
+authors' website, as is Hal Daumé's *A Course in Machine Learning* linked below.
+If your Python is rusty, Jake VanderPlas's *Python Data Science Handbook* is free
+online.
+
+---
+class: center, middle
+
+# Part 1: What and Why of Machine Learning
+
+???
+Let's start with the content. The first part of today is conceptual: what
+machine learning is, what kinds of problems it addresses, and some guiding
+principles for applying it. It is deliberately high level. From next week on we
+go into the technical details, starting with generalization and validation.
+
+---
+class: middle
+
+# A motivating case: hospital readmissions
+
+.larger[
+A hospital wants to know, at discharge, which patients will be **readmitted within 30 days**.
+]
+
+- What are $x$ and $y$? When is $y$ known?
+- Classification or regression? What is the baseline?
+- What does a false negative cost? A false positive?
+- What would the hospital *do* with a prediction?
+
+???
+I want to keep one concrete problem in mind for the rest of today. Readmission
+within 30 days is expensive for hospitals and harmful for patients, and many health
+systems penalize it, so there is real demand for a model that flags patients at
+discharge. Take a minute and answer these questions with your neighbor. Notice that
+the label only becomes known 30 days later, that "predict everyone stays home" is a
+strong baseline because most patients are not readmitted, and that the value of the
+model depends entirely on the intervention it triggers, such as a follow-up call.
+Every guiding principle later in this lecture comes back to this example.
+
+---
+class: center, middle
+
+# What is machine learning?
+
+???
+Machine learning is about extracting knowledge from data. It is closely related
+to statistics and optimization, but it is focused on prediction: the input to a
+learning algorithm is a dataset, and the output is a program that makes
+decisions on future observations. Ask yourself how many systems you have already
+interacted with today that use a learned model; the same tools are now standard in
+the sciences, from diagnosis to finding exoplanets in light curves.
+
+---
+class: spacious
+
+# Types of Machine Learning
+- Supervised
+- Unsupervised
+- Reinforcement
+
+???
+Ask the class to name the three branches before you go through them. This course focuses mostly on
+supervised learning, which is by far the most common in industry and applied
+research. We spend Week 10 on unsupervised learning, and we will not cover
+reinforcement learning, but you should know how it differs from the other two: an
+agent acts in an environment and learns from a reward signal, not from correct answers.
+
+---
+class: center
+
+# Supervised Learning
+
+.larger[
+$$ (x_i, y_i) \sim p(x, y) \text{ i.i.d.}$$
+$$ x_i \in \mathbb{R}^p$$
+$$ y_i \in \mathbb{R}$$
+$$f(x_i) \approx y_i$$
+]
+
+???
+In supervised learning we observe input–output pairs $(x_i, y_i)$, where $x_i$ is
+a $p$-dimensional feature vector and $y_i$ the target. We assume they are drawn
+i.i.d. from an unknown joint distribution $p(x, y)$. Ask the class what i.i.d.
+means: independent and identically distributed. We write a distribution rather
+than a function because the relation between $x$ and $y$ need not be
+deterministic. The name "supervised" comes from the fact that a supervisor gives
+us the correct answers $y_i$ during training.
+
+---
+# Generalization
+.padding-top[
+.left-column[
+Not only
+
+
+also for new data:
+]
+
+.right-column[$f(x_i) \approx y_i$,
+
+
+$f(x) \approx y$
+]]
+
+???
+This is the most important idea of the course. We do not care how well $f$ fits
+the training points $x_i$; we care how well it predicts on new samples from the
+same distribution. That is what distinguishes learning from function
+approximation. A common misconception is that a model that fits the training data
+perfectly is a good model. Next week is entirely about generalization and how to
+measure it with validation and cross-validation.
+
+---
+# Unsupervised Learning
+.padding-top[
+$$ x_i \sim p(x) \text{ i.i.d.}$$
+Learn about $p$.
+]
+
+--
+
+- Clustering
+- Dimensionality reduction
+- Topic modeling
+
+???
+In unsupervised learning we only observe the $x_i$, drawn from an unknown
+distribution, and we want to learn something about that distribution: whether the
+data lie near a low-dimensional subspace, whether they form groups, or what
+"normal" looks like. Typical tasks are clustering, dimensionality reduction, topic
+modeling, and outlier detection, which matters for fraud and security. The goal is
+much less clearly defined than in supervised learning, because there is no correct
+answer to compare against, and that makes evaluation hard. We cover these methods
+in Week 10.
+
+---
+# Other kinds of learning
+
+- Semi-supervised
+- Active Learning
+- Forecasting
+- ...
+
+???
+Many settings lie between the three main types. Semi-supervised learning combines
+a few labeled points with many unlabeled ones. Active learning lets the model ask
+for labels of the points it finds most informative, which sits between
+supervised and reinforcement learning. Forecasting drops the independence
+assumption, because observations are ordered in time; we devote Week 11 to it. If
+you understand the three main types, these variants are easy to place.
+
+---
+# Classification and Regression
+
+.left-column[
+### Classification
+- target y discrete
+
+- Is this patient sick?
+]
+
+.right-column[
+### Regression
+- target y continuous
+- How long will it take for the patient to recover?
+]
+???
+Supervised learning comes in two basic kinds. If $y$ is discrete, it is
+classification; if $y$ is continuous, it is regression. The distinction matters
+mainly because we measure the quality of predictions very differently for the two,
+which is the topic of Week 7. It is not always clear which formulation is best:
+ask the class whether predicting a 1-to-5 star rating is classification or
+regression. There are only five outcomes, but they are ordered, so both
+formulations can work.
+
+---
+class: middle
+
+# Guiding Principles in Machine Learning
+
+???
+For the rest of this part I want to go through some guiding principles for
+applying machine learning. They sound soft, but in my experience they decide
+whether a project succeeds more often than the choice of algorithm does. Keep them
+in mind for your project proposal.
+
+---
+class: middle
+
+# Goal considerations
+
+???
+The most important step is defining the goal and a way to measure it. Competitions
+such as Kaggle skip this step, because the organizers already chose the task and
+the metric. In real projects and in research, nobody tells you whether the problem
+is supervised or unsupervised, classification or regression, or whether it should
+be a machine learning problem at all. Your proposal has to answer these questions.
+
+---
+class: middle
+# The Cost of Complex Systems
+
+## Data driven first? yes! (or maybe)
+## Machine Learning first: No!
+
+???
+Do not start with machine learning. Learned systems are complex, fragile, and hard
+to debug. Start by collecting data and using it to drive and evaluate decisions;
+often that already solves most of the problem. Only add a model when a simpler
+rule or analysis is clearly not enough. Ask yourself: what would a rule written by
+a domain expert achieve?
+
+---
+class: middle
+
+# Thinking in Context!
+# What is the baseline?
+# What is the benefit?
+
+???
+Think about the context of your problem: what do you want to achieve, what is the
+simplest way to achieve it, and what does improving over that baseline buy you?
+An example: you are closing an electronics store with one last sale and want to
+email your customers. You could predict who is likely to respond, but what is the
+benefit? You will never email them again, so there is no cost to emailing
+everybody. For your project, always state the baseline and the value of beating
+it.
+
+---
+class: middle
+
+# Good and Bad Substitutes
+
+???
+Often we cannot measure the quantity we care about directly, so we optimize a
+substitute metric. Suppose a music streaming service makes its radio feature much
+better. It cares about revenue, but a better radio will barely move revenue in the
+short term, so what would you measure instead? Or suppose an ad platform
+optimizes clicks: it can raise clicks by placing ads where people click by
+accident, but accidental clicks do not convert, and advertisers leave. A bad
+substitute can be optimized in ways that hurt the real goal.
+
+---
+# Try it: frame your own problem
+
+.smaller[
+**10–15 minutes, in pairs.** Pick a prediction problem from your own field (a candidate for your project).
+Write down:
+
+1. The unit of prediction, the features $x$, and the target $y$. When is $y$ observed?
+2. Supervised or unsupervised? Classification or regression?
+3. The simplest baseline (a rule, the majority class, last year's value).
+4. The metric you would report, and the quantity you actually care about.
+   Could optimizing the metric hurt the real goal?
+5. Is labeled data free or expensive? How many examples could you get?
+
+Two pairs present in 1 minute each; the class looks for weak spots.
+]
+
+???
+This is the first draft of your paper proposal, so take it seriously. Walk around and
+push pairs on questions 3 and 4: many will name a metric such as accuracy without a
+baseline, or a target that is only observed after the decision has to be made. When
+pairs present, ask the class to find one reason the project could fail. The most
+common weak spot is a target that leaks information from the future; we come back to
+leakage in Week 3.
+
+---
+class: middle
+
+# Communicating Results
+
+???
+You also need to communicate results and explain your methodology. If you apply
+machine learning in another scientific field, reviewers will want to know why it
+works and when it fails. If a model makes decisions in a business, you need to
+convince the people responsible that nothing unexpected will happen. Being able to
+explain what a result means, how reliable it is, and what its impact is, is part
+of the job, and a large part of your research paper. Sometimes you also have to explain
+individual decisions to users; we look at model interpretation in Week 9.
+
+---
+class: middle, center
+
+# Sidebar: Ethical Considerations
+
+![:scale 30%](images/propublica_compas.png)<br/>
+.compact[https://www.propublica.org/article/machine-bias-risk-assessments-in-criminal-sentencing]
+
+???
+Explainability and transparency matter most when people's lives are affected.
+This ProPublica investigation examined a commercial risk-assessment tool used in
+criminal sentencing in the US and found strong racial disparities in its errors.
+The system was a black box; a more transparent model would at least have allowed
+scrutiny. I recommend reading the article, and thinking about which fairness
+criterion you would want such a system to satisfy.
+
+---
+class: middle
+
+# Ethics: It’s in the application!
+
+???
+Some people think ethics is not the concern of the technical people; I disagree.
+If you build a model, you should know whether and how it is biased, and whether its
+use is ethical. Consider two schools that both predict which students will
+underperform next year. One used the predictions to remove those students before
+the annual evaluation; the other used them to give those students extra support.
+The algorithm can be identical; the outcome depends on the application.
+
+---
+class: middle
+
+# Data and Data Collection
+
+???
+Data is the critical component of any machine learning system, and we will spend a
+lot of time on handling and transforming it. Once you have a dataset, ask: should
+I get more data? Competitions again hide this question. More data from the right
+source usually helps, so the answer depends on the marginal cost of more data, the
+marginal benefit to the model, and the marginal benefit of a better model to your
+goal. In Week 2 you will see learning curves, which estimate the second quantity. The
+cost of labels varies enormously: predicting observable events such as clicks gives new
+labels for free every day, while automating an expert's diagnosis costs money per label.
+Start with a subsample that fits in memory before reaching for distributed tools.
+
+---
+# What goes wrong in practice
+
+.smaller[
+**Shortcut learning.** A CNN detecting pneumonia on chest X-rays scored well within the
+hospitals it was trained on, but partly by recognizing *which hospital* an image came from
+(scanner and label artifacts), since disease prevalence differed between hospitals. Performance
+dropped on external hospitals.
+.compact[Zech et al., *PLOS Medicine* 2018]
+
+**A substitute that drifted.** Google Flu Trends estimated flu prevalence from search queries.
+In the 2012–13 season it overestimated doctor visits for influenza-like illness by roughly a factor of two,
+as search behavior and the search engine itself changed.
+.compact[Lazer et al., *Science* 2014]
+]
+
+???
+Two documented failures, both relevant to your projects. In the X-ray case the model
+exploited a feature that was predictive in the training data but had nothing to do with
+the disease, and a random train–test split from the same hospitals could not reveal it;
+only testing on a different hospital did. In the flu case the relation between the
+substitute signal and the target changed over time, which is drift. Ask the class: for
+the readmission model, what could play the role of the hospital tag? The validation
+strategy must match how the model will be used, which is the theme of next week.
+
+---
+# Cornerstones of this Course
+
+- Good software engineering practices
+- Problem definition and success measures
+- Feature engineering and data cleaning
+- Strength and weaknesses of different algorithms
+- Model selection best practices
+- Experiment tracking and the ML lifecycle
+
+???
+These are the themes that run through the course. Machine learning systems are
+more complex than ordinary software, so software engineering matters even more;
+that is the second part of today. Problem definition and choosing the right metric
+come up in the homeworks and your proposal. Feature engineering, data cleaning and
+model choice are rarely taught in class but decide most real projects. Finally,
+careful model selection and tracked, reproducible experiments are what make your
+results believable, from MLflow in Week 2 to deployment and monitoring in Week 12.
+
+---
+# The Machine Learning Lifecycle
+
+.center[
+![:scale 75%](images/lifecycle_loop.png)
+]
+
+???
+This is the arc of the whole course. We start with framing and data, then validation and preprocessing, then model families, then evaluation and tuning, and we end in Week 12 with what happens after deployment: registering, serving, monitoring for drift and retraining. Every stage is logged, which is why MLflow runs through the course from Week 2 on.
+
+---
+class: center, middle
+
+# General coding guidelines
+
+???
+Before we go into tools, a few general guidelines for writing code, including research
+code. Abelson put it as "programs must be written for people to read, and only
+incidentally for machines to execute"; Kernighan added that debugging is twice as hard as
+writing code, so clever code is code you cannot debug.
+
+---
+class: padding-top
+
+- Don’t be clever!
+
+
+- Make it readable!
+
+
+- Future you is the most likely person to try to understand your code.
+
+
+
+--
+- Avoid writing code.
+
+???
+In short: don't be clever, make it readable, and remember that you in six
+months are the most likely reader. And the best way to keep code readable is to
+write less of it. Use library functions instead of reimplementing them; a 10%
+speedup that triples the length of your code is usually not worth it.
+
+---
+class: center, middle
+
+# Python basics
+
+???
+Now some remarks on Python and its ecosystem. We will not go through syntax or the
+standard library; I assume you can write basic Python. Python 2 is long dead; the course
+pins Python 3.12 in `pyproject.toml`, and uv installs that interpreter for you. The heavy
+numerical work in NumPy and scikit-learn runs in compiled code, so write vectorized
+operations rather than Python loops over data.
+
+---
+class: spacious
+
+# Python environments
+
+- Don't use the system Python!
+
+- One virtual environment per project
+
+- Record dependencies in `pyproject.toml`, exact versions in a lock file
+
+- We use **uv** (https://docs.astral.sh/uv/)
+
+???
+Package management is where most beginners lose time. Never install packages into
+the Python that ships with your operating system; create one isolated environment
+per project, so projects cannot break each other. Declare your direct dependencies
+in `pyproject.toml` and let a tool record the exact resolved versions in a lock file,
+which is what makes an experiment reproducible on another machine. Earlier
+generations of this workflow used pip with requirements files or conda; uv does
+the same job much faster and with proper dependency resolution. Common
+misconception: a `requirements.txt` without pinned versions is not a reproducible
+environment.
+
+---
+# Working with uv
+
+.smaller[
+```bash
+# get the course environment (reads pyproject.toml + uv.lock)
+$ uv sync
+
+# run anything inside the environment, no activation needed
+$ uv run python train.py
+$ uv run jupyter lab
+
+# add a dependency (updates pyproject.toml and uv.lock)
+$ uv add lightgbm
+$ uv add --dev pytest pytest-cov
+
+# start your own project
+$ uv init my-project
+```
+]
+
+???
+These are the commands you need. `uv sync` creates `.venv` in the project folder
+with exactly the versions in `uv.lock`. `uv run` executes a command inside that
+environment, so you never have to remember to activate anything. `uv add` resolves
+the new package against everything already installed and updates both files; commit
+both to Git. For your project, start with `uv init` and add packages as you need
+them. Don't mix `pip install` into a uv-managed environment, because the lock file
+then no longer describes what is installed.
+
+---
+# Environments and Jupyter Kernels
+
+.smaller[
+- Environment != kernel: a kernel is the process that runs your notebook
+- Simplest: start Jupyter from the project environment
+
+```bash
+$ uv run jupyter lab
+```
+
+- To use the environment from another Jupyter or VS Code, register a kernel:
+
+```bash
+$ uv run python -m ipykernel install --user --name aie683 --display-name "Python (AIE683)"
+```
+]
+
+???
+Jupyter runs notebooks in kernels, and a kernel is not automatically the
+environment you think it is. A very common bug: you install a package, and the
+notebook still cannot import it because it runs in a different environment. Check
+with `import sys; sys.executable` in the notebook. The simplest fix is to always
+start Jupyter with `uv run jupyter lab` from the repository root. If you prefer VS
+Code, select the `.venv` interpreter of the project or register a named kernel as
+shown.
+
+---
+class: spacious
+
+# Editors and linters
+
+- VS Code / PyCharm
+
+- JupyterLab
+
+- Google Colab
+
+- Linter + formatter: `ruff` (`uvx ruff check .`)
+
+???
+Python is dynamically typed, so a typo in a rarely executed branch only fails when that
+branch runs. Whatever editor you use, make sure it runs a linter as you type. A linter reports
+syntax errors, undefined names, and unused imports and variables before you run
+the program. `ruff` is a fast linter and formatter that also enforces PEP 8, the
+Python style guide; `uvx` runs it as a standalone tool without adding it to the project. Write PEP 8 style code: it makes your code easier for others to
+read and theirs easier for you. Remember the first rule of PEP 8, though: use your
+own judgment, and don't follow a tool blindly.
+
+---
+class: middle
+
+# Questions ?
+
+???
+Let's take a short break here. Questions about the conceptual part, the course
+structure, or the project? After the break we set up Git and look at testing.
+
+---
+class: center, middle
+
+# Part 2: Git, GitHub and Testing
+
+???
+In the first part we talked about very general, high-level issues. Now we go down
+to the working tools: version control with Git, collaboration on GitHub, testing
+with pytest, and continuous integration. You will use all of them for the
+homeworks and your project. Parts of this section are based on Roger Dudler's git
+guide and the Software Carpentry lessons.
+
+---
+class: center, fit
+# Why do I care?
+
+![:scale 40%](images/final_doc.jpg)
+
+???
+Everyone has a folder like this: final, final_v2, final_really_final. Now imagine
+it with code, data, and a paper, and three co-authors editing at the same time.
+Version control replaces this with a history where every change has a message, an
+author and a date, and where you can go back to any earlier state. Anything you edit more
+than once, such as code, LaTeX sources, configuration and notes, belongs in Git; large data
+files and generated outputs do not. A good reference is GitHub's Get Started documentation.
+
+---
+# Configuration
+
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+git config --global init.defaultBranch main
+git config --global core.editor "code --wait"
+```
+
+Show your configuration:
+
+
+```bash
+git config --list
+```
+???
+Git commands have the form `git <verb>`; here the verb is `config`. The `--global`
+flag applies the setting to all your repositories. Set your name and email, since
+they are recorded in every commit; use the same email as your GitHub account. Set
+the default branch name to `main`, which is GitHub's default, and set an editor you
+are comfortable with; the default is vim. You can change all of these at any time.
+
+---
+# Creating a repository
+
+.smallest[
+```bash
+$ mkdir homework1
+$ cd homework1
+```
+
+
+```bash
+$ git init
+```
+```
+Initialized empty Git repository in /tmp/homework1/.git/
+```
+
+```bash
+$ ls -a
+
+```
+```
+.  ..  .git
+```
+
+```bash
+$ git status
+```
+
+```
+On branch main
+
+No commits yet
+
+nothing to commit (create/copy files and use "git add" to track)
+```
+]
+???
+`git init` turns the current folder into a repository. The hidden `.git` directory
+is where Git stores the entire history of the project. If you delete `.git`, the
+history is gone and the folder is an ordinary folder again. In practice, with
+GitHub, you more often start by cloning an existing repository, or by creating the
+repository on GitHub first. Note that `uv init` also runs `git init` for you.
+
+---
+# Cloning a repository
+
+.center[
+![:scale 70%](images/clone_new.png)
+]
+
+```bash
+$ git clone git@github.com:<user>/<repo>.git
+```
+???
+Cloning is the most common way to get a repository: it copies the full history
+from a remote, such as GitHub, and sets that remote up as `origin`. The SSH URL
+requires an SSH key registered on GitHub; set one up once and you never need to type
+passwords again. Otherwise use the HTTPS URL. Clone the course repository this way
+today.
+
+---
+#  Workflow?
+
+![:scale 100%](images/git-staging-area.png)
+
+???
+This diagram shows the three places a change lives locally: the working directory,
+where you edit files; the staging area, or index, where you collect the changes for
+the next commit with `git add`; and the repository, where `git commit` records them
+permanently. Ask the class: why have a staging area at all? It lets you split
+unrelated changes into separate, meaningful commits.
+
+---
+# Changing a File
+.smaller[
+```bash
+$ echo "print('Hello world!')" >> task1.py
+```
+
+```bash
+$ git status
+```
+```
+On branch main
+
+No commits yet
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+
+	task1.py
+
+nothing added to commit but untracked files present (use "git add" to track)
+```
+
+```bash
+$ git add task1.py
+```
+]
+
+???
+We create a file, and `git status` reports it as untracked: Git sees it but does not
+manage it yet. `git add` starts tracking it and puts its current content into the
+staging area. Get into the habit of running `git status` before and after every
+command until you can predict its output.
+
+---
+# Viewing your history
+
+
+```bash
+$ git commit -m "say hello"
+```
+```
+
+[main (root-commit) 7d139fb] say hello
+ 1 file changed, 1 insertion(+)
+ create mode 100644 task1.py
+```
+
+```bash
+$ git log
+```
+```
+commit 7d139fb317ecfa7d629654b709747e91ececa444 (HEAD -> main)
+Author: Your Name <you@example.com>
+Date:   Thu Oct 1 09:12:29 2026 +0300
+
+    say hello
+```
+
+???
+`git commit` records the staged changes with a message. Each commit gets a hash that
+identifies it uniquely; the first seven characters are usually enough to refer to
+it. `git log` shows the history, newest first. Write messages that say why you made
+a change, not just which file you touched; "fix leakage in scaler" is useful months
+later, "update" is not.
+
+---
+# A note on viewing changes
+
+
+Changes between working directory and what was last staged
+
+
+```bash
+git diff
+```
+
+Changes between staging area and last commit
+
+
+```bash
+git diff --staged
+```
+
+???
+There are two diffs to know. Plain `git diff` shows what you changed but have not
+staged yet. `git diff --staged` shows what will go into the next commit. Look at the
+staged diff before every commit; it is the cheapest code review you will ever get,
+and it catches accidentally added debug code and data files.
+
+---
+# Recovering Older Versions of Files
+
+- Overwrite task1.py:
+
+```bash
+$ echo "print('goodbye, cruel world!')" >  task1.py
+$ cat task1.py
+```
+```
+print('goodbye, cruel world!')
+```
+
+Recover last recorded version:
+
+```bash
+$ git restore --source=HEAD task1.py
+$ cat task1.py
+```
+```
+print('Hello world!')
+```
+
+???
+`git restore` sets a file in the working directory back to its state in a commit;
+`--source=HEAD` is the default and can be left out, and any other commit hash works
+too. In older tutorials you will see `git checkout HEAD task1.py` for the same thing.
+Careful: uncommitted changes you overwrite this way are gone, because Git never saw
+them. To move the whole branch back, `git reset --hard HEAD~1` discards the last commit;
+on commits you have already pushed, use `git revert`, which adds a commit that undoes it.
+The reset variants are in the Backup.
+
+---
+# Branches
+
+```bash
+$ git switch -c new_feature
+```
+```
+Switched to a new branch 'new_feature'
+```
+make some changes, add, commit...
+
+Moving between branches:
+```bash
+$ git switch main
+```
+```
+Switched to branch 'main'
+```
+changes are not present in main..
+
+???
+A branch is a separate line of development. `git switch -c` creates a branch and
+switches to it; older tutorials use `git checkout -b` for the same thing. Commits you
+make on `new_feature` do not appear on `main` until you merge them. Use a branch for
+every experiment idea you might want to throw away: it is free, and `main` always
+stays in a working state.
+
+---
+# Merge
+
+- Fast-forward merge:
+
+![:scale 90%](images/git_fast_forward_merge.png)
+
+- Merge-commits:
+
+![:scale 90%](images/git_merge_commit.png)
+
+???
+Merging combines branches, and it helps to think of it as an operation on the commit
+graph. If one commit is a descendant of the other, the merge is a fast-forward: the
+branch pointer simply moves forward, which is what happens when you pull changes and
+have no local commits. Otherwise Git creates a merge commit with both commits as
+parents. If both sides changed the same lines, you get a conflict that you resolve by
+hand, then add and commit the result.
+
+---
+class: fit
+# Remote repository
+
+- central location everyone can see
+- requires network ?
+- GitHub, GitLab, Bitbucket
+- public vs private
+
+![git repo first push](images/github-repo-after-first-push.jpg)
+
+???
+A remote is another copy of the repository that everyone can reach, usually on a
+hosting service such as GitHub or GitLab. You only need the network to push and
+pull; all other Git operations are local. Repositories can be public or private; keep
+your homework repositories private. You send your commits with `git push` and get
+others' commits with `git pull`.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 50%](images/forks1.png)
+???
+Pull requests let you contribute to a repository you do not have write access to,
+for example an open-source library or the course materials. The main repository is
+usually called "upstream". You want to change something there, but you cannot push
+to it. So you fork it on GitHub, clone your fork, commit on a feature branch, push the
+branch to your fork (`origin`), and open a pull request that the owners review before
+merging. The step-by-step pictures are in the Backup.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 60%](images/forks_master_feature2.png)
+???
+You add upstream as a second remote with `git remote add upstream <url>` and pull
+from it; new feature branches start from there and are pushed to your fork. The main
+branch of your fork is then mostly irrelevant; GitHub's "Sync fork" button updates
+it if you want. Rule of thumb: pull from upstream, push to origin.
+
+---
+# Typical Workflow
+
+- Clone
+
+- Branch
+
+- Add, commit, add, commit, add, commit, ...
+
+- Merge / rebase
+
+- Push
+
+???
+A typical workflow for a change: clone the project, create a branch, make small
+commits as you go, integrate the latest main by merging or rebasing, and push. For the
+homeworks the simple version, without a branch, is enough. For your project,
+especially with a partner, use branches and pull requests even on your own
+repository; it keeps main working and gives you a place to review each other's code.
+
+---
+# `.gitignore`
+
+.smaller[
+```bash
+# Python / uv
+__pycache__/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# experiment tracking and outputs
+mlruns/
+mlartifacts/
+outputs/
+
+# data: download at runtime, don't commit
+data/
+*.csv
+*.parquet
+```
+]
+
+???
+A `.gitignore` lists files and folders Git should never track. Ignore the virtual
+environment, caches, notebook checkpoints, MLflow's local tracking folders, and
+large data files. Data should be downloaded or generated by code, not committed;
+GitHub rejects files over 100 MB, and history with large files never shrinks. Do
+commit `pyproject.toml` and `uv.lock`, since they define the environment. Ask the
+class: what else in their projects should be ignored? Credentials and `.env` files.
+
+---
+class: center, middle
+
+# Unit Tests and integration tests
+
+???
+Linters catch syntax errors and some typos, but they do not tell you whether your
+code does what it should. That is what tests are for. Who here has worked with an
+automatic testing framework? What is it for, and why would we want it?
+
+---
+class: spacious
+
+# Why test?
+
+- Ensure that code works correctly.
+- Ensure that changes don’t break anything.
+- Ensure that bugs are not reintroduced.
+- Ensure robustness to user errors.
+- Ensure code is reachable.
+
+???
+We want to know that code is correct, and that it stays correct when we change it:
+with good tests you can refactor aggressively. When you fix a bug, a test that
+reproduces it prevents it from coming back. Tests also check behavior on edge cases
+and invalid input. And coverage measurement (`uv run pytest --cov`) reveals code that no test reaches,
+which may be code that never runs at all.
+
+---
+# How to test?
+
+- pytest – https://docs.pytest.org
+
+- Searches for all `test_*.py` files, runs all `test_*` functions.
+
+- Reports nice errors!
+
+- Run it in the project environment:
+
+```bash
+$ uv add --dev pytest pytest-cov
+$ uv run pytest
+```
+
+???
+Python has the built-in `unittest` module, but pytest is the standard for new
+projects and what I recommend. It collects all files whose names start with `test_`,
+runs every function whose name starts with `test_`, and reports a summary. Tests are
+plain functions with `assert` statements. When an assert fails, pytest rewrites it to
+show the values involved, which makes failures easy to read. Add it as a development
+dependency with uv so it does not end up in your runtime requirements.
+
+---
+class: fit2
+# Example
+
+.smaller[
+
+```python
+# content of inc.py
+
+def inc(x):
+    return x + 2
+
+# content of test_sample.py
+from inc import inc
+
+def test_answer():
+    assert inc(3) == 4
+```
+]
+
+![:scale 60%](images/pytest_failure.png)
+
+???
+This is a slightly modified version of the example from the pytest documentation.
+`inc` should increment a number, but it has a bug: it adds two. The test calls it with
+3 and expects 4. Running `uv run pytest` finds `test_answer` because of its name,
+runs it, and reports one failure with the traceback and the actual value: 5 instead of
+4. Note that `assert` only receives a boolean, yet pytest shows the values that went
+into the comparison. Fix it to `x + 1` and the test passes, which still does not prove
+the function correct; tests are necessary, not sufficient.
+
+---
+# Testing ML code
+
+.smaller[
+```python
+# test_model.py
+from sklearn.datasets import make_classification
+from sklearn.linear_model import LogisticRegression
+
+
+def test_beats_chance():
+    X, y = make_classification(n_samples=200, random_state=0)
+    model = LogisticRegression().fit(X[:150], y[:150])
+    assert model.score(X[150:], y[150:]) > 0.6
+
+
+def test_predict_shape():
+    X, y = make_classification(n_samples=50, random_state=0)
+    pred = LogisticRegression().fit(X, y).predict(X)
+    assert pred.shape == y.shape
+```
+]
+
+???
+Machine learning code is harder to test because the "correct" output is rarely known
+exactly. Useful tests check properties instead: output shapes, that a model beats a
+trivial baseline on easy synthetic data, that results are reproducible with a fixed
+`random_state`, and that your preprocessing never uses test data. Tests like these run
+in seconds and catch most of the silent bugs that otherwise show up as mysteriously
+bad results. Ask the class: how would you test a function that is supposed to
+standardize features?
+
+---
+class: center, middle
+
+# Continuous integration (with GitHub)
+
+???
+Continuous integration means automatically running your tests whenever the code
+changes. I show it with GitHub Actions, since that is what you will most likely use,
+here and in industry; large companies have their own systems, but the principles are
+the same. The extension to automatically deploying code that passes the tests is
+continuous deployment, which is harder for machine learning models; we discuss model
+deployment in Week 12.
+
+---
+# What is Continuous integration?
+
+- Run command on each commit (or each PR).
+- Unit testing and integration testing.
+- Can act as a build-farm (for binaries or documentation).
+- Requires clear declaration of dependencies.
+- Build matrix: Can run on many environments.
+- Common services: GitHub Actions, GitLab CI, CircleCI, Azure Pipelines
+
+???
+A CI service runs a sequence of commands on a clean cloud machine every time you push,
+either to certain branches or for each pull request. Usually the command runs the
+test suite, but it can also check style, measure coverage, or build documentation.
+Because the machine is clean, you must declare all your dependencies explicitly, which
+is exactly what `pyproject.toml` and `uv.lock` do. A build matrix runs the same steps
+on several operating systems or Python versions. Because it runs automatically, nobody can
+forget to run the tests, and if you only merge pull requests that pass, main stays working.
+
+---
+# Setting up GitHub Actions
+
+.smaller[
+File `.github/workflows/tests.yml`:
+
+```yaml
+name: tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --locked
+      - run: uv run pytest
+```
+]
+
+???
+GitHub Actions needs no separate account: you add a YAML file under
+`.github/workflows/` and push it. This workflow runs on every push and pull request,
+on Ubuntu, for two Python versions. The steps check out the code, install uv, create
+the environment from the lock file, and run the tests. `--locked` makes the run fail
+if `uv.lock` is out of date with `pyproject.toml`, which catches the common mistake of
+forgetting to commit the lock file. It is free for public repositories, with a monthly
+allowance for private ones. After you push, follow the run in the Actions tab; on a pull
+request the check appears on the PR page.
+
+---
+# Try it: a tested, versioned project
+
+.smaller[
+**15 minutes, on your laptop.**
+
+```bash
+$ uv init aie683-sandbox && cd aie683-sandbox
+$ uv add scikit-learn && uv add --dev pytest
+```
+1. Write `model.py` with a function `fit_model(X, y)` and a test `tests/test_model.py`
+   that checks it beats the majority class on `load_breast_cancer()`.
+2. `uv run pytest`, then `git add`, `git commit`.
+3. Break the function, commit, then recover the working version with `git log` and `git restore` (or `git reset`).
+4. Push to a new private GitHub repository.
+
+Bonus: add the GitHub Actions workflow from the previous slides and watch the check turn green.
+]
+
+???
+This is the workflow you will use for every homework, so do it now while I can help.
+The breast cancer dataset ships with scikit-learn, so no download is needed; the
+majority class gives about 63% accuracy, and almost any classifier beats it easily. The
+point of step 3 is to experience that a committed mistake is recoverable. Typical
+problems I expect: a missing SSH key for GitHub, `uv.lock` forgotten in the commit, and
+tests that cannot import `model.py`; for the last one, run pytest from the project root.
+
+---
+class: middle
+
+# Questions ?
+
+???
+That concludes today. Before next week: install uv and Git, clone the course
+repository, run `uv sync`, and check that `uv run jupyter lab` opens. Next week we
+start with the technical core of the course: generalization, the nearest-neighbor
+classifier, and cross-validation, with our first MLflow-tracked experiments.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (55 slides); they are not needed for the homework or the project.
+
+---
+.center[
+![:scale 70%](images/fb1.png)
+]
+
+???
+Here is a social media news feed. Try to point out the places where a model is
+involved. The sponsored item was selected by a model that decided who should see
+it and how much to charge for it. The order of posts is a ranking model. Even the
+choice of which birthdays, trending topics and suggested contacts to show is
+learned. Most of these decisions are invisible to the user.
+
+---
+class: fit
+.center[
+![:scale 70%](images/fb3.png)
+]
+
+???
+After you upload an album, the platform picks the most "interesting" pictures and
+decides how much space each one gets in the mosaic. Face detection and ranking
+both run behind this layout. None of this is labeled as machine learning, which is
+the typical situation in practice.
+
+---
+.center[
+![:scale 70%](images/amazon1.png)
+]
+
+???
+An online store: I search for "machine learning". The ranked list of results,
+the suggested sub-categories, badges like "best seller", and the ad at the top
+are all produced by models. Search ranking is one of the most economically
+important applications of supervised learning.
+
+---
+.center[
+![:scale 70%](images/amazon2.png)
+]
+
+???
+On the product page there is more: the targeted ad, the default format, the
+"frequently bought together" block, and, less obviously, the default seller
+behind the "add to cart" button, which is chosen from many sellers by a model.
+The point is that machine learning is everywhere and often not visible as such.
+
+---
+# Science!
+
+.center[
+![:scale 70%](images/exoplanet.png)
+]
+
+???
+Beyond consumer products, machine learning is now a standard tool in the
+sciences: medical diagnosis, drug discovery, particle physics, and astronomy. This
+is an artist's illustration; in the real data the star and planet are a single
+pixel, and planets are found by detecting small periodic dips in brightness in
+millions of light curves, which is a classification problem. Many of your project
+ideas will likely be of this kind: a scientific or domain question where a model
+helps. Next, a small taxonomy of learning problems.
+
+---
+class: center, middle
+
+# Types of Machine Learning
+
+???
+There are three main branches of machine learning. Who can name them before I
+show the list?
+
+---
+class: spacious
+
+# Examples of Supervised Learning
+
+- spam detection
+- medical diagnosis
+- ad click prediction
+
+???
+In medical diagnosis, $x_i$ could be a patient's test results and $y_i$ whether
+they have diabetes. In remote sensing, $x_i$ could be the pixels of a satellite
+image tile and $y_i$ the terrain type. A very common use is automating manual
+labeling: annotate part of the data by hand, train a model, and let it label the
+rest. Ask the class for one example from their own field.
+
+---
+class: center, spacious
+
+# Reinforcement Learning
+
+.left-column[
+![:scale 100%](images/alpha_go.png)
+]
+
+.right-column[
+![:scale 100%](images/nao.png)
+]
+
+???
+Reinforcement learning is about an agent that interacts with an environment to
+reach a goal. The environment can be a Go board, where AlphaGo beat the world
+champion, or a robot moving in a room. The agent is not told the correct action;
+it only receives a reward signal, often delayed. Ask the class: what would the
+environment and the reward be for a recommender system?
+
+---
+class: spacious
+
+# Explore & Learn
+.center[
+![:scale 80%](images/reinforcement_cycle.png)
+]
+
+???
+The key difference is that in reinforcement learning you usually do not start
+from a fixed dataset. The agent's actions determine which states it sees, so data
+collection and learning cannot be separated, which you can do in supervised and
+unsupervised learning. This is the explore–exploit trade-off. We will not cover
+reinforcement learning in this course: the techniques are quite different, and
+most applied problems you will meet are supervised.
+
+---
+class: center, middle
+
+![:scale 50%](images/future_will_not_be_supervised.png)
+
+???
+This slogan is associated with Yann LeCun, who argues that supervised learning is
+fundamentally limited and is not how humans learn. Self-supervised pretraining has
+indeed become central for images and text, but that is outside the scope of this
+course. For the tabular and scientific data most of you work with, a strong
+supervised component is still what solves the problem.
+
+---
+# Relationship to Statistics
+
+.left-column[
+### Statistics
+- model first
+- inference emphasis
+]
+.right-column[
+### Machine learning
+- data first
+- prediction emphasis
+]
+
+???
+There is no sharp boundary between statistics and machine learning, and two of
+the recommended books are statistics textbooks. Still, the tools in this course
+differ from a typical statistics course. Statistics usually emphasizes inference,
+often as hypothesis tests: for example, "are women less likely to enroll in a
+graduate informatics program?", answered from a sample with explicit assumptions
+about how the sample relates to the population. Often you also posit a model of
+the process that generated the data.
+
+---
+# Relationship to Statistics
+
+.left-column[
+### Statistics
+- model first
+- inference emphasis
+]
+.right-column[
+### Machine learning
+- data first
+- prediction emphasis
+]
+
+???
+Machine learning emphasizes prediction for individual data points on new, unseen
+data. We often have no explicit model of the data-generating process; we rely on
+the assumption that future data come from the same distribution as the training
+data. Neither view is better. Know which kind of question you are asking: the
+tools in this course will rarely give you a yes/no inference, and only limited
+insight into the data-generating process.
+
+---
+class: middle, center
+
+# Explainable Results
+
+![:scale 60%](images/amazon_explanations.png)
+
+???
+Sometimes you also have to explain an individual decision to the user.
+Recommendation engines work better when they show a reason, such as "because you
+watched X". Interestingly, this works even when the explanation is not the real
+reason the item was recommended, which raises obvious ethical questions. Once you
+need explanations, prediction accuracy is no longer the only criterion. We look at
+model interpretation in Week 9.
+
+---
+# Free vs Expensive Data
+
+.left-column[
+## Free
+]
+
+.right-column[
+## Expensive
+]
+
+???
+The cost of data varies enormously, and two extremes are common: data that comes
+for free and data that is very expensive. Before the next slide, ask the class:
+which kinds of data do you think are free?
+
+---
+# Free vs Expensive Data
+
+.left-column[
+## Free
+Predict observable events
+- Stock market
+- Clicks
+- House numbers
+]
+
+.right-column[
+## Expensive
+Automate complex process
+- Diagnosis
+- Drug Trial
+- Chip Design
+]
+
+???
+Free data is data you get more of just by waiting: if you predict an observable
+future event such as clicks or prices, every day brings new labeled examples. You
+can also design a process so that it produces labels, as Google did by using
+CAPTCHAs to label house numbers. At the other extreme you automate an expensive
+process: an expert's diagnosis, a drug trial, or measuring the efficiency of a
+chip design. There, every label costs real money, and that shapes which methods
+and validation schemes are feasible.
+
+---
+class: middle
+
+# The cost (and benefit?) of BigData
+
+# Subsample to RAM (cloud machines: terabytes)
+
+???
+More data can also be more expensive to work with. Storage is rarely the problem;
+runtime and, above all, your own time are. Distributed systems like Spark are
+harder to use, less interactive, and harder to debug. A practical strategy is to
+start with a subsample that fits into memory, where Python and scikit-learn are
+fast and convenient; cloud machines with a terabyte of RAM are easy to rent, and
+single-machine tools like Polars or DuckDB handle surprisingly large tables. Some
+applications do require the full data, but that should rarely be the first step.
+
+---
+class: middle
+
+Programs must be written for people to read, and only incidentally for
+machines to execute.
+.quote_author[Harold Abelson (wizard book)]
+
+???
+This is from the preface of *Structure and Interpretation of Computer Programs*.
+The main purpose of code is to communicate ideas to your peers and to your future
+self; code is read far more often than it is written. Spend the extra time to make
+it easy to understand, rather than clever or short. For a research paper, your
+code is part of the evidence, and reviewers will read it.
+
+---
+class: middle
+
+Everyone knows that debugging is twice as hard as writing a program in
+the first place. So if you're as clever as you can be when you write it,
+how will you ever debug it?
+.quote_author[Brian Kernighan]
+
+???
+Brian Kernighan co-wrote the first book on C and much of early Unix. His point is
+another call for simplicity. Your homework and project code should meet the
+standard of code you would write at a job, because the point of the assignments is
+practice for that. It also helps whoever grades it.
+
+---
+class: spacious
+
+# Why Python?
+
+- General purpose language
+- Great libraries
+- Easy to learn / use
+- Contenders: R (Julia?)
+
+???
+Python is a general-purpose language, unlike MATLAB or R, so the same language
+covers data loading, modeling, and serving a model as a web service. Its libraries
+for numerical computing and machine learning are excellent, and it is easy to learn
+and very interactive. R is a good alternative for statistics and much of this
+course could be taught in it, but Python is the standard in machine learning
+research and industry. Julia is promising but its ecosystem is smaller.
+
+---
+class: spacious
+
+# The two language problem
+
+Python is sloooow…
+
+
+- Numpy: C
+- Scipy: C, Fortran
+- Pandas: Cython, C, Python
+- Scikit-learn: Cython, Python
+
+- CPython: C
+
+???
+Pure Python is slow. Ask the class what language NumPy, SciPy, pandas and
+scikit-learn are written in: mostly C, Fortran and Cython, with Python on top, and
+the CPython interpreter itself is written in C. So users write Python while the
+heavy computation runs in compiled code. The practical consequence: avoid Python
+loops over data and express computation with vectorized NumPy and pandas
+operations. In this course we stay on the Python side.
+
+---
+# Python versions
+
+- Python 2 is dead (end of life since 2020)
+
+- This course: **Python 3.12**, pinned in `pyproject.toml`
+
+- Supported versions: see https://devguide.python.org/versions/
+
+???
+Python 2 reached end of life in 2020, and no current scientific library supports
+it; if you find Python 2 code online, treat it as outdated. Python 3 releases a new
+minor version every year and each is supported for five years. The course project
+pins Python 3.12 in `pyproject.toml`, and uv will install that interpreter for you
+if you don't have it. You do not need to install Python separately.
+
+---
+class: spacious
+
+# Dynamically typed, interpreted
+
+- Invalid code lying around
+
+- Code is less self-documenting
+
+???
+Python is dynamically typed, which is part of why it is easy to learn. Ask who has
+worked with a statically typed language like C++ or Java. There, if the code
+compiles, at least the types and syntax are consistent everywhere; in Python a typo
+in a rarely executed branch only fails when that branch runs. Untyped code is also
+less self-documenting, since the reader has to guess what the inputs are. Type
+hints help with both, and together with linters and tests they give us back the
+safety nets. That is where we go next.
+
+---
+class: center
+
+
+![:scale 90%](images/do-you-need-git.png)
+
+???
+The answer to this flowchart is almost always yes. Anything you will edit more than
+once, such as code, LaTeX sources, configuration files or notes, belongs in version
+control. The exceptions are large data files and generated outputs, which we
+exclude with `.gitignore`.
+
+---
+class: middle
+
+# Git and GitHub
+
+https://docs.github.com/en/get-started
+
+https://rogerdudler.github.io/git-guide/
+
+???
+Who here has not used Git so far? And who thinks they really understand it? This
+section starts with the basics and then builds a mental model of what Git does
+internally. Use version control for any code or document you work on. Git is the
+de facto standard, and GitHub is where we host the course material and your
+homework.
+
+---
+class: center, middle
+
+![:scale 40%](images/git_xkcd.png)
+
+???
+This xkcd comic may look familiar. Many people use Git by memorizing a few commands,
+and when something goes wrong they delete the repository and clone it again. Who has
+done that? The goal of today is that you understand enough to never have to do that
+again.
+
+---
+class: center, middle
+
+![:scale 40%](images/torvalds_ducreux.jpg)
+
+???
+Git was written by Linus Torvalds for the Linux kernel. Its internal model is
+elegant, but its command-line interface is famously inconsistent. So instead of
+memorizing commands, we try to understand the few concepts underneath, after which
+the commands make much more sense.
+
+---
+# Referencing different versions
+
+- Shorthand for different versions of a repository (refers to commits)
+    - Current Version (most recent commit): ``HEAD``
+    - Version before current: ``HEAD~1``
+    - Version before that: ``HEAD~2``
+
+- Each of these also has a commit hash
+    - use ``git log`` to get appropriate hash
+
+???
+`HEAD` refers to the commit you currently have checked out, and `HEAD~1`, `HEAD~2`
+count back from it. Every commit can also be referenced by its hash. These
+references work with almost every Git command that takes a commit, such as `diff`,
+`restore`, and `reset`.
+
+---
+# Exploring History
+
+Changes made in the last commit
+
+
+```bash
+git diff HEAD~1
+```
+
+Changes made in the last 2 commits
+
+
+```bash
+git diff HEAD~2
+```
+
+Changes made since commit hash...
+
+
+```bash
+git diff 0b0d55e
+```
+???
+`git diff` with a commit compares your working directory with that commit. Use
+`git log --oneline` to find the hash you want; the first seven characters suffice.
+This is how you answer questions like "what did I change since the last run that
+gave good results?", which, together with the Git commit that MLflow records for
+each run, makes experiments traceable.
+
+---
+# Recovering Older Versions of whole repo
+```bash
+$ echo "print('goodbye, cruel world!')" >  task1.py
+$ git add task1.py
+$ git commit -m "saying goodbye"
+```
+```
+[main 95f3b39] saying goodbye
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+```
+```bash
+$ git log --oneline
+```
+```
+95f3b39 (HEAD -> main) saying goodbye
+7d139fb say hello
+```
+
+???
+Now we commit the bad change, so there are two commits in the history. Suppose we
+want to go back to the state of the first commit for the whole repository, not just
+one file. That is what `git reset` does, on the next slide.
+
+---
+# Resetting:
+```bash
+$ git reset --hard HEAD~1
+```
+```
+HEAD is now at 7d139fb say hello
+```
+
+???
+`git reset --hard HEAD~1` moves the current branch back one commit and resets both
+the staging area and the working directory to it. The "goodbye" commit is no longer
+on the branch. This rewrites history, so never do it on commits you have already
+pushed and shared; for those, use `git revert`, which adds a new commit that undoes
+the old one. We will see later that even after a hard reset the old commit can be
+recovered with `reflog`.
+
+---
+class: center, middle
+
+# Collaborating using Git & GitHub
+
+???
+So far everything happened in one local repository. Now we add remotes, which is
+how you share work with collaborators and back it up.
+
+---
+# GitHub
+
+???
+For Git, GitHub is just another remote; in principle you could replace it with a USB
+stick passed around. What GitHub adds is user management, issue tracking, pull
+requests, and integration with services like continuous integration. The two
+features that matter for us are pull requests and GitHub Actions, which we see at the
+end of today.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 50%](images/forks2.png)
+???
+So you "fork" it on GitHub. A fork is a GitHub concept, not a Git concept: it is
+simply a copy of the repository that lives under your GitHub account.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 50%](images/forks3.png)
+???
+To make changes, you clone your fork to your laptop, create a feature branch, commit
+your changes there, and push the branch back to your fork, which is the `origin`
+remote.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 50%](images/forks.png)
+???
+Then you open a pull request, which asks the owners of upstream to "pull" your branch
+into the main repository. They can review it, comment, and ask for changes before
+merging. There is one oddity in this workflow, on the next slide.
+
+---
+class: center
+
+# GitHub pull request workflow
+<br />
+![:scale 60%](images/forks_master_feature.png)
+???
+You start from the current state of upstream's main branch and push feature branches.
+But upstream keeps changing. How do those changes get to your laptop? Your fork on
+GitHub does not update itself automatically.
+
+---
+# Some tips
+
+- `$ git status`
+
+- Install shell plugins for status and branch (`oh-my-zsh`)
+
+![:scale 90%](images/git_shell_extension.png)
+
+- Set editor, pager and diff-tool (check out meld!)
+
+- Use `.gitignore`
+
+???
+Run `git status` constantly. A shell prompt that shows the current branch and whether
+there are uncommitted changes saves a lot of confusion; oh-my-zsh does this for zsh,
+and there are equivalents for bash and fish. Configure an editor and a diff tool you
+like; meld and the VS Code diff view both compare whole folders nicely. And use a
+`.gitignore` file, shown in the main part.
+
+---
+# Git log
+
+![:scale 80%](images/git_log.png)
+
+???
+Become friends with `git log`. Plain `git log` shows full commit messages and is very
+long. `--oneline` gives one line per commit, `--decorate` shows where branches point,
+`--all` includes all branches, and `--graph` draws the structure of the history.
+Together they give a compact picture of the whole repository.
+
+---
+class: center, middle
+
+![:scale 50%](images/git_adog.png)
+
+???
+A mnemonic for that combination: "git log a dog", for `--all --decorate --oneline
+--graph`. It is worth defining a Git alias for it, for example
+`git config --global alias.adog "log --all --decorate --oneline --graph"`, so that
+`git adog` shows you the full graph.
+
+---
+# Understanding Git
+
+- Working directory
+
+- Repository (Commit graph, history)
+
+- Index (Staging Area)
+
+- Branches
+
+- Head
+
+???
+Now the mental model. The working directory is the content of the folder on disk.
+The repository proper is the commit graph, a directed acyclic graph where each commit
+points to its parents. The index, or staging area, collects the changes for the next
+commit. Branches are nothing more than named pointers to commits, and HEAD is a
+pointer to the active branch, the one that moves when you commit. The state of your
+repository is the state of all five, and every command is best understood by what it
+does to each of them.
+
+---
+class: compact
+
+# git Commands
+
+.smallest[
+- .normal[`git add`]<br />
+puts files from working directory into staging area (index). If not tracked so far, adds them to tracked files.
+
+- .normal[`git commit`]<br />
+commits files from staging area (index) to repository, moves current
+branch with HEAD
+
+- .normal[`git restore [--source=<commit>] <file>`]<br />
+Set `<file>` in working directory to state at `<commit>` (default: index).
+
+- .normal[`git switch [-c] <branch>`]<br />
+moves HEAD to `<branch>` (-c creates it), changes content of working dir
+
+- .normal[`git reset --soft <commit>`]<br />
+moves HEAD to `<commit>` (takes the current branch with it)
+
+- .normal[`git reset --mixed <commit>`]<br />
+moves HEAD to `<commit>`,  changes index to be at `<commit>` (but not
+working directory)
+
+- .normal[`git reset --hard <commit>`]<br />
+moves HEAD to `<commit>`, changes index and working tree to `<commit>`.
+]
+
+???
+Let's go through the commands in terms of those five concepts. `add` moves changes
+from the working directory to the index; `commit` moves the index into the graph and
+advances the branch. `restore` changes files, not branches; `switch` moves HEAD to
+another branch. The three forms of `reset` all move the current branch; they differ
+only in how much else they reset: nothing, the index, or the index and the working
+directory. Ask the class: which of these can lose uncommitted work?
+
+---
+class: center, middle
+
+# git gui
+
+![:scale 80%](images/git_gui.png)
+
+???
+If you prefer a graphical tool for staging and committing, `git gui` ships with Git.
+It shows which files changed, lets you inspect the changes, and stage individual
+lines or whole files before you type the commit message. The Source Control panel in
+VS Code offers the same functions. Staging individual lines is the easiest way to
+split unrelated changes into separate commits.
+
+---
+class: center, middle
+
+# gitk
+
+![:scale 80%](images/gitk.png)
+
+???
+`gitk` is a graphical version of `git log`. With `gitk --all` you see all branches,
+similar to the "adog" command, but you can click through commits, search messages,
+and inspect diffs. It is a good way to look at the graph before a merge or a reset.
+The Git Graph extension for VS Code does the same inside the editor.
+
+---
+class: center
+
+![:scale 60%](images/git_data_transport.png)
+
+???
+This data-flow diagram shows how changes travel from the working directory through
+the index and local repository to a remote, and back via fetch, pull and checkout. It
+covers only part of the commands: reset and anything else that moves branches or HEAD
+are missing. Still, it is a useful picture for the everyday commands.
+
+---
+# reflog
+.left-column[
+`$ git reflog`
+![:scale 100%](images/git_reflog.png)
+]
+.right-column[
+<br \>
+![:scale 100%](images/git_simple_merge_graph.png)
+]
+???
+The last command is `reflog`. It records every position HEAD has had, including
+those caused by reset, rebase and switching branches. `git log` and `gitk` only show
+commits reachable from a branch, but commits you "lost" with a hard reset or a failed
+rebase still exist for a while. Find them in the reflog and bring them back with
+`git reset --hard <hash>` or a new branch. This is why you almost never need to
+delete a repository and start over.
+
+---
+class: center, middle
+# Git for ages 4 and up:
+
+https://www.youtube.com/watch?v=1ffBJ4sVUb4
+
+(with play-doh!)
+
+???
+For some of you this was too slow, for others too fast. If you are confused, go
+through these slides again and watch this talk, which builds the commit graph out of
+play-doh; it is long but very clear. And for those who found this too detailed: we
+left out tags, the stash, cherry-picking and rebasing, all of which you will
+eventually meet.
+
+---
+class: center, middle
+
+# Test-driven development?
+
+???
+Some people practice test-driven development: write the test first, then the code
+that makes it pass. Who has heard of it? Even if you don't follow it strictly, test-driven
+debugging is very useful: when you find a bug, first write a test that fails because of
+the bug, then fix it. You need that non-regression test anyway, and it usually makes
+the debugging itself easier.
+
+---
+# Types of tests
+
+- Unit tests – function does the right thing.
+
+- Integration tests – system / process does the right thing.
+
+- Non-regression tests – bug got removed (and will not be reintroduced).
+
+???
+Unit tests check the smallest units, usually single functions. Integration tests
+check that the parts work together, for example that the full pipeline from raw data
+to predictions runs. Non-regression tests can be either kind; they are added for a
+specific failure you have seen, and they accumulate as a project ages.
+
+---
+class: fit
+# Example
+
+```python
+# content of inc.py
+
+def inc(x):
+    return x + 1
+
+# content of test_sample.py
+from inc import inc
+
+
+def test_answer():
+    assert inc(3) == 4
+```
+
+![:scale 70%](images/pytest_passed.png)
+
+???
+We fix the function and run pytest again; the test passes. Ask the class: does that
+mean the function is correct? No. Tests are necessary, not sufficient, for correctness;
+we could test more inputs, including edge cases. Keep implementation and tests in
+separate files, usually with all tests in a `tests/` folder, as here.
+
+---
+# Test coverage
+.smaller[
+.left-column[
+```python
+# inc.py
+def inc(x):
+    if x < 0:
+        return 0
+    return x + 1
+
+
+def dec(x):
+     return x - 1
+```
+]
+
+.right-column[
+```python
+# test_inc.py
+from inc import inc
+
+def test_inc():
+     assert inc(3) == 4
+```
+]
+]
+
+.reset-column[
+![:scale 70%](images/pytest_coverage1.png)]
+???
+Now `inc.py` has an `if` branch and a second function `dec`, and we have the same
+single test. It still passes, but clearly we are not testing everything: the
+negative-input branch and `dec` are never executed. Here that is obvious; in a larger
+project it is not, and that is what coverage tools are for.
+
+---
+# Test coverage
+.smaller[
+.left-column[
+```python
+# inc.py
+def inc(x):
+    if x < 0:
+        return 0
+    return x + 1
+
+
+def dec(x):
+     return x - 1
+```
+]
+
+.right-column[
+```python
+# test_inc.py
+from inc import inc
+
+def test_inc():
+     assert inc(3) == 4
+```
+]]
+
+.reset-column[
+![:scale 50%](images/pytest_coverage2.png)
+]
+
+???
+With the pytest-cov plugin, `uv run pytest --cov=inc` measures which statements of the
+`inc` module the tests executed. The report says two of the six statements were not
+covered, so coverage is 67%. The terminal report tells you how much is missing; the
+HTML report on the next slide tells you where.
+
+---
+# HTML report
+
+.larger[
+```bash
+$ uv run pytest --cov=inc --cov-report=html
+```
+]
+
+.left-column[![:scale 100%](images/pytest_html_report1.png)]
+.right-column[![:scale 100%](images/pytest_html_report2.png)]
+
+???
+With `--cov-report=html`, pytest writes an HTML report with an overview and a
+line-by-line view of each file, where executed lines are green and missed lines red.
+Here we clearly see that `return 0` and `dec` are never reached. Aim for high coverage
+of the algorithmic code; covering every error message matters less. The coverage badges
+you see on GitHub projects are generated automatically by continuous integration,
+which is our last topic.
+
+---
+# Benefits of CI
+
+- Can run on many systems
+- Can’t forget to run it
+- Contributor doesn’t need to know details
+- Can enforce style
+- Can provide immediate feedback
+- Protects the main branch (if run on PR)
+
+???
+CI runs on systems you may not have, and in parallel. Because it is automatic, nobody
+can forget to run the tests; GitHub shows a green check or a red cross on every commit
+and pull request. A contributor can change code without knowing how to run the full
+test suite. And if you only merge pull requests that pass CI, the main branch stays in
+a working state. For a research project, it also demonstrates to reviewers that your
+code actually runs from a clean checkout.
+
+---
+# What does it do?
+
+- Triggered at each commit / push
+- Sets up a virtual machine with your configuration.
+- Pulls the current branch.
+- Runs command. Usually: install, then test.
+- Reports success / Failure to GitHub.
+
+???
+The steps: a push or a pull request triggers a workflow. A fresh virtual machine
+starts with the configuration you specified and checks out your branch; for a pull
+request it can use the result of merging your changes into main. It then runs your
+commands, usually installing the dependencies and running the tests, and reports the
+result back to GitHub.
+
+---
+# Using CI
+
+- Triggered any time you push a change
+- Integrated with pull requests
+- Try a pull request on your own repository!
+
+???
+Once the workflow file is in the repository, every push triggers a run, and you can
+follow it in the Actions tab. Try it for your project repository: push a change, then
+open a pull request from a branch on your own repository to see the checks appear on
+the pull request page. A failing check before you merge is much cheaper than a broken
+main branch the night before a deadline.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'github',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

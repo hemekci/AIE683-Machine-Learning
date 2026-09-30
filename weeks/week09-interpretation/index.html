@@ -1,0 +1,1113 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 9: Model Interpretation & Feature Selection</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 9: Model Interpretation & Feature Selection
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today has two halves. In the first we ask what a trained model has learned: which inputs it relies on, how its prediction moves when an input changes, and why it made one particular prediction. In the second we ask whether we need all the inputs at all. Last week we tuned and compared models with nested cross-validation and tracked them in MLflow; today we open those models up. The lab notebook for today is `lab.ipynb` in the week folder.
+
+---
+# A model that learned the wrong lesson
+
+.smaller[
+- Hospital data, 1990s: predict the risk of death for pneumonia patients, to decide who can be
+  treated at home.
+- Accurate model; one learned rule: **having asthma lowers the risk**.
+- True in the data: asthmatic patients were sent straight to intensive care, and the extra care
+  lowered their death rate.
+- Deployed as is, the model would have sent the highest-risk patients home.
+- (Caruana et al., *Intelligible Models for HealthCare*, KDD 2015)
+]
+
+--
+
+.smaller[
+Other everyday reasons to look inside a model:
+- a lender must tell an applicant the main reasons for a rejection;
+- a feature turns out to be a leaked copy of the target;
+- a domain expert will not trust a model that cannot show what it uses.
+]
+
+???
+I start with this case because accuracy did not reveal the problem: the model was right about the data and wrong about the world. Only because the model was interpretable did someone notice the asthma rule. Ask the class: which other features in a medical dataset might encode the treatment rather than the patient's condition? The same pattern shows up in credit scoring, fraud detection and churn prediction, and inspection tools are how we catch it before deployment.
+
+---
+class: spacious
+
+# Model Interpretation (post-hoc)?
+
+- ## Not inference!
+- ## Not causality!
+- ## Still useful
+
+???
+Post-hoc interpretation means we train any model and then probe it. This is not statistical inference: there are no p-values for a random forest's importances, and nothing here tells you what happens if you intervene in the world. It is useful for model debugging, finding leakage, guiding feature engineering, and explaining individual predictions. One caveat up front: if the model is bad, interpreting it tells you nothing about the data.
+
+---
+# Types of explanations
+
+## Explain model globally
+- How does the output depend on the input?
+- Often: some form of marginals
+
+## Explain model locally
+- Why did it classify this point this way?
+- Explanation could look like a "global" one but be different for each point.
+- "What is the minimum change to classify it differently?" (counterfactual explanation)
+
+???
+Global explanations summarize behavior over the whole data distribution, for example how the prediction changes as a function of one feature on average. Local explanations are about a single prediction, which is what a loan applicant or a doctor usually needs. Counterfactual explanations answer "what would have to change" and are popular in regulated settings. Keep this distinction in mind: most of the tools today come in both a global and a local flavor.
+
+---
+class: spacious
+# Explaining the model $\neq$ explaining the data
+
+- Model inspection only tells you about the model
+- The model might not accurately reflect the data
+- Two equally accurate models can tell different stories
+
+???
+This is the most common misconception. If a feature is unimportant to the model, it may still be strongly related to the target, for example because a correlated feature carries the same information. We will see in the case study that five models with the same test score give quite different importance profiles. So say "important to this model", not "important for house prices".
+
+---
+# Interpretable models as an alternative
+
+.smaller[
+- Instead of explaining a black box, fit a model that is readable by construction:
+  - sparse linear / logistic models (Week 4)
+  - shallow decision trees, rule lists (Week 5)
+  - generalized additive models, e.g. Explainable Boosting Machines (`interpret` package)
+- On many tabular problems these are within a small margin of gradient boosting.
+- Worth trying first when decisions are high-stakes (Rudin, *Nature Machine Intelligence*, 2019).
+]
+
+???
+Before reaching for post-hoc tools, check whether an interpretable model is good enough. Generalized additive models fit one shape function per feature, so you can plot the whole model; Explainable Boosting Machines are a modern boosted version of this idea, and they were used on the pneumonia data. The argument by Rudin is that for high-stakes decisions we should prefer models we can read over explanations of models we cannot. We do not install `interpret` in this course, but it is worth knowing about for your projects.
+
+---
+# "Features important to the model"?
+
+Naive:
+- `coef_` for linear models (abs value or norm for multi-class)
+- `feature_importances_` for tree-based models
+
+Use with care!
+
+???
+These are the attributes that everyone looks at first because they come for free after fitting. Both have serious problems that we look at on the next slides. Coefficients depend on scaling and correlation; impurity-based importances are biased and computed on training data. Neither gives you a sense of uncertainty.
+
+---
+# Linear model coefficients
+- Relative importance only meaningful after scaling
+- Coefficient = change in prediction per unit change in one feature, **holding the others fixed**
+- Correlation among features might make coefficients completely uninterpretable
+- L1 regularization will pick one at random from a correlated group
+- Any penalty will invalidate usual interpretation of linear coefficients
+
+???
+When can you interpret a coefficient? When features are standardized, not strongly correlated, and the model fits well; then the sign and size tell you the partial effect in the model. "Holding the others fixed" is exactly what fails with correlated features: you cannot change the number of rooms without changing the number of bedrooms. With regularization, coefficients are shrunk and, for Lasso, the choice among correlated features is essentially arbitrary. Also remember that classical standard errors do not apply to penalized models.
+
+---
+# Impurity-based importances: a pitfall
+
+.smaller[California housing plus two pure-noise columns, random forest (test R² 0.79)]
+.center[
+![:scale 95%](images/impurity_vs_permutation.png)
+]
+.smaller[
+- Impurity importance is computed on **training** data; it gives `random_num` about as much
+  credit as `Population` and ranks `AveOccup` above `Latitude`.
+- Permutation importance on **test** data gives both random columns essentially zero.
+]
+
+???
+Impurity-based importance adds up how much each feature reduced the training loss in all splits. Fully grown trees split on noise, and continuous or high-cardinality features offer more split points, so they collect spurious credit. Permutation importance on the training set still gives the noise column a small positive value, because the forest has memorized the training data; on the test set that disappears. This is the "what goes wrong in practice" message of the first half: never report `feature_importances_` of a deep forest as evidence that a feature matters.
+
+---
+# Permutation importance
+Idea: measure how much the score depends on one feature, without refitting
+
+`$$I_i^\text{perm} = \text{Acc}(f, X, y) - \mathbb{E}_{x_i}\left[\text{Acc}(f(x_i, X_{-i}), y)\right]$$`
+
+.smaller[
+1. Score the fitted model on held-out data.
+2. Shuffle column $i$ (breaks its link to $y$ and to the other features), score again.
+3. Repeat and average; the drop is the importance of feature $i$.
+]
+
+.smaller[
+```python
+from sklearn.inspection import permutation_importance
+result = permutation_importance(model, X_test, y_test, n_repeats=10,
+                                scoring="r2", random_state=0, n_jobs=-1)
+result.importances_mean, result.importances_std
+```
+]
+
+???
+Walk through the three steps on the board with a small table: shuffle one column, keep the model fixed, rescore. Because it only needs predictions, it works for any model, including pipelines with preprocessing, and it can use whatever scoring metric you care about. Report the spread over repeats, not just the mean; the boxplots on the previous slide came from `importances`. Question for the class: why does shuffling create data points the model never saw? That leads to the next slide.
+
+---
+# Permutation importance and correlated features
+
+.left-column[
+.smaller[
+- Shuffling one of two correlated features creates unrealistic points
+  (6 bedrooms in a 2-room house).
+- The model can still use the correlated partner, so **both** can look unimportant.
+- Remedy: cluster features by rank correlation, keep one per cluster, then compute
+  importances.
+]
+]
+.right-column[
+![:scale 100%](images/correlated_clusters.png)
+]
+
+.tiny[
+```python
+corr = spearmanr(X).correlation
+linkage = hierarchy.ward(squareform(1 - np.abs(corr)))
+clusters = hierarchy.fcluster(linkage, t=0.5, criterion="distance")
+```
+]
+
+???
+In California housing, latitude and longitude are strongly (negatively) correlated, and so are median income and average rooms. When features are correlated, importance is shared or hidden, and this is true for permutation importance, SHAP and coefficients alike. Clustering the Spearman correlation matrix and keeping one representative per cluster gives importances that are easier to read. Also mention the conditional permutation idea: permute within groups of similar samples so that the shuffled points stay realistic.
+
+---
+# Try it: guess, then measure (10 min)
+
+.smaller[
+`lab.ipynb`, section **Try it 1**
+
+1. Before running anything, write down the three features you think drive California house
+   prices.
+2. The lab adds two pure-noise columns and fits a random forest.
+3. Compute permutation importance on (a) 3000 training rows and (b) the test set.
+4. Compare with `rf.feature_importances_`.
+]
+
+.smaller[
+Discuss with your neighbour:
+- Did your guess match the measured top 3?
+- Which method gives the random columns credit, and why?
+- Why do training-set and test-set permutation importances differ?
+]
+
+???
+Give them ten minutes; most groups finish the code in five and need the rest for discussion. Most students guess income and rooms; the measured top three are median income, latitude and longitude, which surprises people who forget that location is a feature. Collect two or three guesses on the board before they run the code, it makes the result stick. In the debrief, connect the train/test gap to overfitting from Week 2.
+
+---
+# SHAP: Shapley values for predictions
+
+.smaller[
+- From cooperative game theory: the features are "players", the prediction is the "payout".
+- Feature $i$ gets its average marginal contribution over all subsets $S$ of the other features:
+]
+.smaller[
+`$$\phi_i = \sum_{S \subseteq F \setminus \{i\}} \frac{|S|!\,(|F|-|S|-1)!}{|F|!}\left[v(S \cup \{i\}) - v(S)\right]$$`
+]
+.smaller[
+- $v(S)$: expected model output when only the features in $S$ are known.
+- **Additivity**: $f(x) = \phi_0 + \sum_i \phi_i(x)$, where $\phi_0$ is the average prediction.
+- Exact computation is exponential; fast exact algorithms exist for trees (`TreeExplainer`)
+  and linear models (`LinearExplainer`); sampling approximations otherwise.
+- Library: `shap` (https://github.com/shap/shap)
+]
+
+???
+The formula looks heavy, but the idea is drop-column importance averaged over every order in which features could be revealed, and computed for one prediction rather than for the score. The Shapley weights are the unique ones that satisfy a small set of fairness axioms, which is the main theoretical selling point. The additivity property is what makes the waterfall plot work: base value plus contributions equals the prediction. Emphasize that v(S) requires a choice of how to "remove" features, which becomes important on the caveat slide.
+
+---
+# SHAP in practice
+
+.smaller[
+```python
+import shap
+explainer = shap.TreeExplainer(gbrt)          # gradient boosting, California housing
+sv = explainer(X_test.sample(1000, random_state=0))   # an Explanation object
+shap.plots.beeswarm(sv)
+```
+]
+.center[
+![:scale 55%](images/shap_beeswarm.png)
+]
+
+???
+Each dot is one district, the horizontal position is its SHAP value for that feature, the color is the feature value. High median income pushes the prediction up, and the latitude and longitude rows show the coastal effect in both directions. Features are ordered by mean absolute SHAP value, which is a global summary built from local explanations. Ask: why is there a long tail to the right for MedInc but not to the left?
+
+---
+# SHAP dependence and local explanations
+
+.left-column[
+.smaller[
+```python
+shap.plots.scatter(sv[:, "MedInc"],
+                   color=sv[:, "AveOccup"])
+```
+]
+![:scale 100%](images/shap_dependence.png)
+]
+.right-column[
+.smaller[
+```python
+shap.plots.waterfall(sv[0])
+```
+]
+![:scale 100%](images/shap_waterfall.png)
+]
+
+???
+The dependence plot shows the SHAP value of one feature against its value; vertical spread at a fixed x indicates interactions, and coloring by a second feature helps find them. It looks like a partial dependence plot but is computed per sample. The waterfall plot is the local explanation: start at the average prediction, add each feature's contribution, arrive at this district's prediction. This is the plot you would show to someone asking "why this price?".
+
+---
+class: fit
+# What SHAP values do and do not mean
+
+.smaller[
+**They do**
+- split one prediction, relative to a baseline, additively among the features;
+- describe the **model's** output (in its units: e.g. log-odds for boosted classifiers).
+
+**They do not**
+- measure causal effects: "what happens if I raise income" is a different question;
+- measure contribution to accuracy: a feature the model overfits can have large SHAP values
+  and zero test importance;
+- come with uncertainty or significance;
+- have a unique answer with correlated features: `TreeExplainer`'s default
+  (tree-path-dependent) and the interventional version (`feature_perturbation="interventional"`
+  with background data) split credit differently.
+- stay fixed when you change the background data or baseline.
+]
+
+???
+This slide is the one I want you to remember from the SHAP part. SHAP values are an accounting of the model's output, not of the world and not of performance. With correlated features, credit can move from one feature to its partner depending on the variant, so do not read a small SHAP value as "the model does not need this". Compare with permutation importance, which measures what the score loses: the two answer different questions and both are worth computing.
+
+---
+class: middle
+
+# Case Study
+
+???
+We now put all these tools side by side on synthetic data where we know the ground truth. Synthetic data is the right choice here because with real data we cannot check which answer is correct. Keep in mind the claim from earlier: explaining the model is not explaining the data.
+
+---
+# Toy data
+```python
+X.shape
+```
+```
+(20000, 8)
+```
+.wide-left-column[
+![:scale 100%](images/toy_data_scatter.png)
+
+]
+.narrow-right-column[
+![:scale 100%](images/covariance.png)
+
+]
+
+???
+Two latent variables generate the target, with coefficients -3.2 and 1.4. Features 0 and 1 are noisy mixtures of the first latent variable, features 2 and 3 of the second, and features 4 to 7 are pure noise. The covariance matrix shows the two correlated blocks. So the "right answer" is: features 0 to 3 matter in pairs, 4 to 7 do not.
+
+---
+class: compact
+# Models on lots of data
+.smallest[
+```python
+lasso = LassoCV().fit(X_train, y_train)
+lasso.score(X_test, y_test)
+```
+0.552
+```python
+ridge = RidgeCV().fit(X_train, y_train)
+ridge.score(X_test, y_test)
+```
+0.552
+
+```python
+lr = LinearRegression().fit(X_train, y_train)
+lr.score(X_test, y_test)
+```
+0.552
+```python
+param_grid = {'max_leaf_nodes': range(5, 40, 5)}
+grid = GridSearchCV(DecisionTreeRegressor(), param_grid, cv=10, n_jobs=-1)
+grid.fit(X_train, y_train)
+grid.score(X_test, y_test)
+```
+0.547
+```python
+rf = RandomForestRegressor(min_samples_leaf=5).fit(X_train, y_train)
+rf.score(X_test, y_test)
+```
+0.537
+]
+
+???
+All five models reach essentially the same test R-squared, a bit above 0.55; the noise we added limits what any model can do. If we only looked at scores, we would call them interchangeable. The next slides show that their explanations are not interchangeable. This is the Rashomon effect: many models, equally good, different stories.
+
+---
+class: fit
+# Coefficients and default feature importance
+![:scale 100%](images/standard_importances.png)
+???
+Lasso puts all the weight on one feature from each correlated pair, and which one it picks is essentially arbitrary. Unregularized linear regression uses large coefficients of opposite sign within a pair. The tree and the forest give no direction, only magnitude, and the forest assigns visible importance to the four pure-noise features. None of these plots is wrong about its model; they just answer a question about the model, not about the data.
+
+---
+# Permutation Importances
+.center[
+![:scale 50%](images/standard_importances.png)
+![:scale 50%](images/permutation_importance_big.png)
+]
+
+???
+On the test set, permutation importance of the noise features is essentially zero for every model, which fixes the forest's spurious importances. But look at the correlated pairs: Lasso still shows one feature per pair, because permuting a feature it does not use cannot hurt it. Permutation importance explains the model faithfully, including its arbitrary choices.
+
+---
+# SHAP values
+.center[
+![:scale 50%](images/standard_importances.png)
+![:scale 50%](images/shap_big.png)
+]
+
+???
+Here I summarize SHAP values as mean absolute value per feature, normalized per model; the mean of signed SHAP values would be close to zero by construction. The pattern is similar to permutation importance: again Lasso's arbitrary choice within each pair is visible, and the forest gives the noise features a small share. The lesson of the case study: all three views agree on the noise features when computed on held-out data, and none of them resolves correlated features for you.
+
+---
+class: middle
+# More model inspection
+
+???
+Importances tell us how much a feature matters, not how. Now we look at the shape of the dependence: partial dependence plots and individual conditional expectation curves. These are the tools that let you say "above this income level, predicted value keeps rising roughly linearly".
+
+---
+# Partial Dependence Plots
+- Marginal dependence of prediction on one (or two) features
+
+`$$f_i^{\text{pdp}}(x_i) = \mathbb{E}_{X_{-i}}\left[f(x_i, x_{-i})\right]$$`
+
+.smaller[
+- Process: pick a grid of values for $x_i$; for each grid value, set $x_i$ to it in **every** row,
+  predict, and average the predictions.
+- Fast recursion method for tree-based models (`method="recursion"`, no data needed)
+- For a linear model the PDP is just a straight line with the coefficient as slope.
+]
+
+???
+Draw the process on the board: copy the dataset once per grid value, overwrite one column, predict, average. That is the "integrate out the other features" in the formula. For gradient boosting and random forests scikit-learn has a fast recursion method that walks the trees instead of predicting on copies. Like permutation importance, the PDP evaluates the model on combinations that may not exist in the data when features are correlated.
+
+---
+class: compact
+# Partial Dependence
+.tiny[
+```python
+from sklearn.inspection import PartialDependenceDisplay
+housing = fetch_california_housing(as_frame=True)
+X_train, X_test, y_train, y_test = train_test_split(housing.data, housing.target, random_state=0)
+gbrt = GradientBoostingRegressor().fit(X_train, y_train)
+
+top6 = X_train.columns[np.argsort(gbrt.feature_importances_)[-6:][::-1]]
+PartialDependenceDisplay.from_estimator(gbrt, X_train, top6, n_cols=3, grid_resolution=50)
+```
+]
+
+--
+
+.center[
+![:scale 60%](images/feat_impo_part_dep.png)
+]
+
+???
+`PartialDependenceDisplay.from_estimator` is the current interface; it takes column names when X is a data frame. Predicted value rises steadily with median income, falls with average occupancy, and has a step-like dependence on latitude and longitude that reflects the coastal cities. The tick marks at the bottom are deciles of the data: do not trust the curve far outside them. Note that the plot has a direction, which impurity importances do not.
+
+---
+# Bivariate Partial Dependence Plots
+.smaller[
+```python
+PartialDependenceDisplay.from_estimator(
+    gbrt, X_train, [("Latitude", "Longitude")], grid_resolution=30)
+```
+]
+.center[
+![:scale 45%](images/feature_importance.png)
+]
+
+???
+Passing a pair of features gives a two-dimensional PDP. Here it essentially draws a map of California: high predicted values along the coast near San Francisco and Los Angeles, lower inland. This is a nice sanity check that the model learned something geographically sensible. Two-way PDPs are expensive for non-tree models, since every grid cell needs a pass over the data.
+
+---
+# PDP Caveats
+.left-column[
+![:scale 100%](images/pdp_failure.png)
+]
+--
+.right-column[
+![:scale 100%](images/pdp_failure_data.png)
+]
+
+???
+Here the partial dependence on feature 1 is flat, and one would conclude the feature is irrelevant. The data on the right shows it is highly relevant: its slope is positive for half the data and negative for the other half, depending on the sign of feature 0. Averaging cancels the two effects. A flat PDP does not mean "no effect"; it can mean "effects that cancel".
+
+---
+class: compact
+# Individual Conditional Expectation (ICE)
+.smaller[
+- Like partial dependence plots, without the final averaging: one curve per sample.
+- `kind="individual"` or `kind="both"` (ICE + PDP); `centered=True` anchors curves at the left edge.
+]
+.tiny[
+```python
+PartialDependenceDisplay.from_estimator(hgb, X, [1], kind="both", subsample=300)
+```
+]
+.center[
+![:scale 40%](images/ice_cross.png)
+]
+
+???
+ICE curves show each sample's prediction as we vary one feature, holding its other features fixed. On the failure example they immediately reveal two groups with opposite slopes, which the average hid. Use `subsample` to keep the plot readable. Heterogeneous ICE curves are a signal of interactions, which you can then look for with a two-way PDP or SHAP dependence plots.
+
+---
+# ICE on California housing
+
+.tiny[
+```python
+PartialDependenceDisplay.from_estimator(
+    gbrt, X_train.sample(500), ["MedInc", "AveOccup", "HouseAge"],
+    kind="both", centered=True, grid_resolution=30)
+```
+]
+.center[
+![:scale 80%](images/ice_california.png)
+]
+
+???
+With centered ICE curves, all curves start at zero and we compare shapes. For median income almost all districts respond the same way, so the PDP is a good summary. For average occupancy and house age the fan is wider: the effect depends on the other features of the district. Ask the class to name a plausible interaction for house age, for example with location.
+
+---
+class: center, middle
+
+# Feature Selection
+
+???
+Second half. So far we explained models that use all features. Now we ask which features a model needs, and how to choose them automatically without fooling ourselves. The main methods are univariate tests, model-based selection, recursive elimination and sequential (wrapper) selection.
+
+---
+class: spacious
+
+# Why Select Features?
+
+- Avoid overfitting (?)
+- Faster prediction and training
+- Less storage for model and dataset
+- Cheaper data collection
+- More interpretable model
+
+???
+Improved accuracy is the reason people give most often, and in practice it is the least common benefit: regularized models and ensembles handle irrelevant features reasonably well. The stronger reasons are practical: fewer features means cheaper data collection, simpler pipelines, faster prediction, and a model you can explain. A model with five features instead of five hundred is much easier to validate and to monitor in production, which we discuss in Week 12. Only if you expect that a small subset of features carries the signal should you expect a performance gain.
+
+---
+class: spacious
+
+# Unsupervised Feature Selection
+
+- May discard important information
+- Variance-based: 0 variance or mostly constant
+- Covariance-based: remove correlated features
+- PCA: remove linear subspaces
+
+???
+Removing constant features is always safe; `VarianceThreshold` does it. Removing low-variance features is not, because a small variance might just mean a small scale. Removing one of two correlated features can discard exactly the difference between them that predicts the target. PCA is not selection at all, since every component uses all original features; we cover it in Week 10.
+
+---
+# Covariance
+
+.smaller[
+```python
+from sklearn.preprocessing import scale
+
+housing = fetch_california_housing(as_frame=True)
+X = housing.data.join(noise)          # 8 features + 5 pure-noise columns
+X_train, X_test, y_train, y_test = train_test_split(X, housing.target, random_state=0)
+cov = np.cov(scale(X_train), rowvar=False)
+```
+]
+.center[
+![:scale 32%](images/img_17.png)
+]
+
+???
+For the feature selection half we use California housing with five pure-noise columns appended, so that a good method has something to remove and we know which columns are useless. The covariance matrix of the standardized features shows the latitude-longitude and income-rooms relations and blocks of zero for the noise. With 13 features you can still read it; with 100 you cannot, which motivates the next slide.
+
+---
+class: center, middle
+
+# Supervised Feature Selection
+
+???
+Now we use the target. The key rule for everything in this part: selection is a step of the model, so it must be fit inside cross-validation, just like scaling in Week 3. We will see what happens when we ignore this rule.
+
+---
+class: fit2
+# Univariate Statistics
+
+.smaller[
+- Pick statistic, check p-values!
+- `f_regression`, `f_classif`, `chi2`, `mutual_info_*` in scikit-learn
+```python
+from sklearn.feature_selection import f_regression
+f_values, p_values = f_regression(X_train, y_train)
+```
+]
+.center[
+![:scale 60%](images/img_20.png)
+]
+
+???
+The F test for regression measures the linear association between each feature and the target on its own. Median income has by far the largest F value; the noise features have large p-values, as they should. It is fast and a good first look, but it assumes a linear relation and ignores interactions: latitude and longitude matter a lot jointly, but each alone is only weakly linearly related to price. With many features, remember the multiple-testing problem when reading p-values.
+
+---
+.smaller[
+```python
+from sklearn.feature_selection import SelectKBest
+
+select = SelectKBest(k=2, score_func=f_regression).fit(X_train, y_train)
+print(X_train.shape, "->", select.transform(X_train).shape)
+print(select.get_feature_names_out())
+```
+```
+(15480, 13) -> (15480, 2)
+['MedInc' 'AveRooms']
+```
+]
+--
+.smaller[
+```python
+all_features = make_pipeline(StandardScaler(), RidgeCV())
+np.mean(cross_val_score(all_features, X_train, y_train, cv=cv))
+```
+0.606
+]
+--
+.smaller[
+```python
+select_2 = make_pipeline(StandardScaler(),
+                         SelectKBest(k=2, score_func=f_regression), RidgeCV())
+np.mean(cross_val_score(select_2, X_train, y_train, cv=cv))
+```
+0.483
+]
+
+???
+The selectors are transformers, so they go into a pipeline and support `get_feature_names_out`. `SelectKBest` keeps a fixed number, `SelectPercentile` a fraction, and `SelectFpr` or `SelectFdr` control error rates of the underlying tests. Two features are not enough here: the score drops from 0.61 to 0.48. With k=8 the score is back to 0.606, so the five noise features cost nothing to a ridge model, which is the point from the "why select" slide.
+
+---
+# Mutual Information
+
+```python
+from sklearn.feature_selection import mutual_info_regression
+scores = mutual_info_regression(X_train, y_train)
+```
+.center[
+![:scale 90%](images/img_22.png)
+]
+
+???
+Mutual information measures any kind of dependence, not only linear, using a nearest-neighbor estimator; tell it which features are discrete with `discrete_features`. Compare with the F values: latitude and longitude, which have low F values, get substantial mutual information because their relation to price is nonlinear. It is slower than the F test and still univariate: it cannot see that latitude and longitude together define location. The noise features get values close to zero, but not exactly zero, because the estimator itself is noisy.
+
+---
+class: spacious
+
+# Model-Based Feature Selection
+
+- Get best fit for a particular model
+- Ideally: exhaustive search over all possible combinations
+- Exhaustive is infeasible (and has multiple testing issues)
+- Use heuristics in practice.
+
+???
+Multivariate selection usually means: find the subset on which a given model has the best cross-validated score. Trying all subsets is exponential, 2 to the 13 here and hopeless beyond a few dozen features, and searching that many subsets overfits the validation data. So we use heuristics: a single fit with importances, recursive elimination, or greedy forward and backward search.
+
+---
+class: fit
+# Model based (single fit)
+.smaller[
+- Build a model, select "features important to model"
+- Lasso, other linear models, tree-based Models
+- Multivariate - linear models assume linear relation
+]
+.smaller[
+```python
+from sklearn.linear_model import LassoCV
+X_train_scaled = scale(X_train)
+lasso = LassoCV(cv=cv).fit(X_train_scaled, y_train)
+print(lasso.coef_)
+```
+```
+[ 0.814  0.124 -0.212  0.255 -0.004 -0.027 -0.855 -0.825  0.    -0.
+  0.    -0.001 -0.004]
+```
+]
+
+.center[
+![:scale 55%](images/img_23.png)
+]
+
+???
+Lasso fits all features jointly and sets some coefficients to zero. With the cross-validated alpha, which is tiny here, most features survive and the noise columns get coefficients close to, but not all exactly, zero. Compare with the F values: latitude and longitude have small F values but large Lasso coefficients, because jointly they carry information that neither carries alone. That is the multivariate advantage.
+
+---
+class: smaller
+# SelectFromModel
+
+```python
+from sklearn.feature_selection import SelectFromModel
+select_lassocv = SelectFromModel(LassoCV(cv=cv), threshold=1e-5)
+pipe_lassocv = make_pipeline(StandardScaler(), select_lassocv, RidgeCV())
+pipe_lassocv.fit(X_train, y_train)[:-1].get_feature_names_out()
+```
+```
+['MedInc' 'HouseAge' 'AveRooms' 'AveBedrms' 'Population' 'AveOccup'
+ 'Latitude' 'Longitude' 'noise_3' 'noise_4']
+```
+--
+```python
+np.mean(cross_val_score(pipe_lassocv, X_train, y_train, cv=cv))
+```
+```
+0.606
+```
+--
+```python
+select_lasso = SelectFromModel(Lasso(alpha=0.1))   # could grid-search alpha
+pipe_lasso = make_pipeline(StandardScaler(), select_lasso, RidgeCV())
+np.mean(cross_val_score(pipe_lasso, X_train, y_train, cv=cv))
+```
+```
+0.524
+```
+
+???
+`SelectFromModel` works with any estimator exposing `coef_` or `feature_importances_`, and the threshold can be a number, "mean" or "median". With LassoCV it keeps ten features, including two noise columns whose coefficients were tiny but not zero, and the score is unchanged. With alpha 0.1 it keeps three features and loses about 0.08 R-squared. A tree ensemble inside `SelectFromModel` is also common; remember the impurity bias from the first half when you do that.
+
+---
+class: spacious
+
+# Recursive Feature Elimination
+
+- Uses feature importances / coefficients, similar to `SelectFromModel`
+- Iteratively removes features (one by one or in groups)
+- Runtime: (n_features - n_features_to_keep) / step model fits
+
+???
+RFE fits the model, removes the `step` least important features, refits, and repeats until the requested number is left. It needs an estimator with coefficients or importances, so for kernel SVMs or MLPs you would use permutation importance or sequential selection instead. It costs one fit per step, much more than `SelectFromModel`, but it adapts to changing importances.
+
+---
+.smaller[
+```python
+from sklearn.feature_selection import RFE
+
+# create a ranking of all features by eliminating down to one
+rfe = RFE(LinearRegression(), n_features_to_select=1)
+rfe.fit(X_train_scaled, y_train)
+rfe.ranking_
+```
+```
+array([ 3,  6,  5,  4,  8,  7,  1,  2, 13, 11, 12, 10,  9])
+```
+]
+
+
+.center[
+![:scale 95%](images/img_27.png)
+]
+
+
+???
+Eliminating down to one feature gives a complete ranking. Latitude and longitude rank first and second, median income third, and all five noise features are eliminated first. The ranking agrees broadly with the absolute coefficients of a single linear regression but not exactly, because coefficients change as features are removed. To choose how many features to keep we need cross-validation, which is the next slide.
+
+---
+# RFECV
+.smaller[
+```python
+from sklearn.feature_selection import RFECV
+rfecv = RFECV(LinearRegression(), cv=cv).fit(X_train_scaled, y_train)
+feature_names[rfecv.support_]
+```
+```
+['MedInc' 'HouseAge' 'AveRooms' 'AveBedrms' 'AveOccup' 'Latitude' 'Longitude']
+```
+]
+.left-column[
+.smaller[
+```python
+pipe = make_pipeline(StandardScaler(),
+                     RFECV(LinearRegression(), cv=cv),
+                     RidgeCV())
+np.mean(cross_val_score(pipe, X_train, y_train, cv=cv))
+```
+```
+0.602
+```
+]
+]
+.right-column[
+![:scale 100%](images/rfecv_curve.png)
+]
+
+???
+RFECV runs the elimination on each training fold and picks the number of features with the best mean validation score; `cv_results_` holds the curve. It keeps seven features: all five noise columns and population are removed. Inside a pipeline, cross-validating the whole thing gives an honest estimate, 0.602, essentially the same as with all features. The curve is flat from about six features on, which is typical: often a range of subset sizes is equally good, and you can pick the smallest within one standard error.
+
+---
+.smaller[
+```python
+from sklearn.preprocessing import PolynomialFeatures, QuantileTransformer
+pipe_poly_rfe = make_pipeline(
+    QuantileTransformer(output_distribution="normal"),   # tame heavy tails first
+    PolynomialFeatures(), StandardScaler(),
+    RFECV(LinearRegression(), step=5, cv=cv), RidgeCV())
+np.mean(cross_val_score(pipe_poly_rfe, X_train, y_train, cv=cv))
+```
+```
+0.701
+```
+```python
+pipe_poly_rfe.fit(X_train, y_train)
+pipe_poly_rfe.named_steps["rfecv"].n_features_
+```
+```
+40        # of 105 polynomial features (can vary slightly: near-ties)
+```
+]
+???
+Feature selection becomes more useful when we first create many candidate features. Here we expand to all degree-two interactions, 105 features, and let RFECV keep about 40 of them; the score rises from 0.60 to 0.70. The quantile transform matters: without it, squaring the heavy-tailed occupancy and population columns produces extreme values and the score drops sharply. RFECV can also be the final estimator, or a transformer in front of any other model.
+
+---
+class: spacious
+
+# Wrapper Methods
+
+- Can be applied for ANY model!
+- Shrink / grow feature set by greedy search
+- Called Forward or Backward selection
+- Run CV / train-val split per candidate feature
+- Complexity: about n_features * (n_features + 1) / 2 CV runs
+- `SequentialFeatureSelector` in scikit-learn
+
+???
+Sequential selection does not need importances: at every step it tries adding (or removing) each remaining feature, cross-validates, and keeps the best move. That makes it model-agnostic and also expensive: quadratic in the number of features, times the cost of cross-validation. It is a one-step look-ahead approximation to the exhaustive search. Since scikit-learn 0.24 it is built in, so no extra package is needed.
+
+---
+# SequentialFeatureSelector
+
+.smaller[
+```python
+from sklearn.feature_selection import SequentialFeatureSelector
+sfs = SequentialFeatureSelector(LinearRegression(), n_features_to_select=7,
+                                direction="backward", cv=cv)
+sfs.fit(X_train_scaled, y_train)
+feature_names[sfs.get_support()]
+```
+```
+['MedInc' 'HouseAge' 'AveRooms' 'AveBedrms' 'AveOccup' 'Latitude' 'Longitude']
+```
+```python
+sfs = SequentialFeatureSelector(LinearRegression(), n_features_to_select="auto",
+                                tol=1e-3, direction="forward", cv=cv)
+```
+```
+['MedInc' 'HouseAge' 'AveRooms' 'AveBedrms' 'Latitude' 'Longitude']
+```
+]
+
+???
+Backward selection to seven features finds the same set as RFECV. Forward selection with `n_features_to_select="auto"` and a tolerance stops when adding a feature improves the CV score by less than `tol`, and here it stops at six. The model used for selection does not have to be the model used for prediction: you could select with a gradient boosting model and predict with a linear one, which is attractive when the final model must be simple to explain. Forward and backward can give different answers; neither is guaranteed optimal.
+
+---
+# What goes wrong: selecting features outside CV
+
+.smaller[
+Pure noise: 100 samples, 5000 random features, random labels. True accuracy: 50%.
+```python
+X_sel = SelectKBest(k=20).fit_transform(X_noise, y_noise)       # uses ALL labels
+cross_val_score(LogisticRegression(), X_sel, y_noise, cv=5).mean()
+```
+```
+0.85
+```
+```python
+pipe = make_pipeline(SelectKBest(k=20), LogisticRegression())  # refit per fold
+cross_val_score(pipe, X_noise, y_noise, cv=5).mean()
+```
+```
+0.48
+```
+]
+.smaller[
+- Classic mistake in wide data (genomics, text features); published results have been
+  retracted for it (Ambroise & McLachlan, PNAS 2002).
+]
+
+???
+This is the most important practical slide of the second half. When you select features on all the data, the validation folds have already influenced which features you kept, so the "validation" score measures how well you found chance correlations. With 5000 noise features, 20 of them will correlate with the labels by chance, and the leaky score is 85% on data that contains no signal. The fix is the same as in Week 3: put the selector in the pipeline. The same applies to RFECV and SFS, whose internal CV does not protect the outer estimate.
+
+---
+# Try it: find the leak (10 min)
+
+.smaller[
+`lab.ipynb`, section **Try it 2**
+
+1. Run the provided code: it reports a high cross-validated accuracy on pure noise.
+2. In one sentence, explain why the estimate is wrong.
+3. Build `honest_pipe` so that selection is refit inside every fold, and report its score.
+4. Bonus: change `k` and the number of noise features. How does the leaky score change?
+]
+
+???
+Most students fix it quickly; the value is in the explanation and the bonus. Increasing the number of noise features makes the leaky score higher, because there are more chance correlations to find, while the honest score stays near 50%. Ask one group to state the rule in their own words: anything that looks at the labels must happen inside the cross-validation loop. Link this to nested cross-validation from Week 8.
+
+---
+# Tracking interpretation results with MLflow
+
+.smaller[
+```python
+mlflow.set_experiment("week09-interpretation")
+for name, model in candidates.items():
+    with mlflow.start_run(run_name=name):
+        model.fit(X_train, y_train)
+        mlflow.log_metric("test_r2", model.score(X_test, y_test))
+        pi = permutation_importance(model, X_test, y_test, n_repeats=5)
+        mlflow.log_table(pi_df, artifact_file="permutation_importance.json")
+        mlflow.log_figure(fig, "permutation_importance.png")   # plot as artifact
+        if name != "ridge":
+            shap.plots.beeswarm(shap.TreeExplainer(model)(X_shap), show=False)
+            mlflow.log_figure(plt.gcf(), "shap_beeswarm.png")
+```
+]
+.smaller[
+- Each run stores its score **and** its explanation; compare them side by side in `mlflow ui`.
+- Log the selected feature list (`mlflow.log_dict`) for feature-selection runs.
+]
+
+???
+Since Week 8 every model comparison goes to MLflow; today we add explanations to the runs. `log_figure` stores a matplotlib figure as an artifact and `log_table` stores a data frame that the UI can display. When a model's importances change between two runs, for example after a data update, you want to be able to see that; in Week 12 we use exactly this for monitoring. The full code is at the end of `lab.ipynb`.
+
+---
+# Try it: feature-budget challenge (15 min)
+
+.smaller[
+`lab.ipynb`, section **Try it 3**
+
+- Data: California housing + 5 noise columns (13 features), 5000-row development sample.
+- Goal: highest 5-fold CV R² using **at most 3 features**.
+- Any model, any selection method: manual, univariate, `SelectFromModel`, RFE, SFS.
+- `check_pipeline(my_pipeline)` reports your CV score and counts your features.
+- At the end, every team's pipeline is evaluated **once** on the test set.
+]
+
+???
+Teams of two or three. Let them start with the linear model and discover that the best three features for a linear model and for a boosted tree are different: for trees, median income plus latitude and longitude is hard to beat, around 0.79 CV R-squared. Write CV scores on the board as teams report them, then run the test evaluation once at the end and discuss whether the ranking changed. That discussion connects to the statistical comparison of models from Week 8.
+
+---
+# Summary
+
+.smaller[
+- Explaining a model is not explaining the data, and not causal inference.
+- Prefer **permutation importance on held-out data** to `feature_importances_`.
+- Correlated features share or hide importance in every method; cluster them first.
+- PDPs show average effects; **ICE** curves (`kind="both"`) reveal heterogeneity.
+- **SHAP** gives additive local explanations of the model's output; read the caveats.
+- Feature selection: univariate (fast, blind to interactions), `SelectFromModel`, `RFECV`,
+  `SequentialFeatureSelector`; always **inside** the CV pipeline.
+- Next week: unsupervised learning (PCA, t-SNE/UMAP, clustering, mixture models).
+]
+
+???
+If students remember three things: use held-out data for importances, read SHAP as an accounting of model output, and keep feature selection inside cross-validation. For the project, I expect an interpretation section: at least permutation importance and one dependence plot for your final model, logged to MLflow. Next week we drop the target entirely and look at unsupervised learning, starting with PCA, which also connects to today's discussion of dimensionality reduction.
+
+---
+class: center, middle
+
+# Questions?
+
+???
+A common question: do forward and backward selection with the same number of features give the same subset? No; both are greedy one-step approximations to the exhaustive search and can end in different subsets. Another frequent one: should I use SHAP or permutation importance in my project? Both, since they answer different questions: SHAP explains predictions, permutation importance explains what the score depends on.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (7 slides); they are not needed for the homework or the project.
+
+---
+# Drop-column importance
+
+`$$I_i^\text{drop} = \text{Acc}(f, X, y) - \text{Acc}(f', X_{-i}, y)$$`
+
+.smallest[
+```python
+def drop_feature_importance(est, X, y):
+    base_score = np.mean(cross_val_score(est, X, y))
+    scores = []
+    for feature in range(X.shape[1]):
+        mask = np.ones(X.shape[1], dtype=bool)
+        mask[feature] = False
+        this_score = np.mean(cross_val_score(est, X[:, mask], y))
+        scores.append(base_score - this_score)
+    return np.array(scores)
+```]
+.smallest[
+- Doesn't really explain the model (refits for each feature)
+- Can't deal with correlated features well
+- Very slow
+- Can be used for feature selection
+]
+???
+Drop-column importance retrains the model without each feature and measures the loss in cross-validated score. It answers "how much would a model lose without this feature", which is a question about the learning problem rather than about the fitted model. If two features are near copies, dropping either costs nothing, so both look unimportant. We come back to this idea in the feature selection half, where backward selection is essentially repeated drop-column importance.
+
+---
+class: fit
+# LIME
+.smaller[
+- Fit a sparse linear model to the black box's predictions in a neighbourhood of one point.
+- Explains a single prediction locally.
+- Paper: "Why Should I Trust You?" Explaining the Predictions of Any Classifier (2016)
+- Package: `lime`. Explanations depend on the kernel width and the random sampling, and can
+  change between runs; SHAP has largely replaced it in tabular practice.
+]
+
+.center[
+![:scale 60%](images/lime_paper.png)
+]
+
+???
+LIME was one of the first model-agnostic local explanation methods and the paper is worth reading for the idea. It samples perturbed points around the instance, weights them by distance, and fits a sparse linear model to the black-box predictions. The weak point is that the neighbourhood definition is arbitrary, and studies found explanations to be unstable across runs. I mention it for historical context and because you will meet it in papers; for tabular models we use SHAP.
+
+---
+# Partial Dependence for Classification
+.tiny-code[
+```python
+for label in range(3):
+    PartialDependenceDisplay.from_estimator(
+        gbc, X_train, range(4), target=label, feature_names=iris.feature_names,
+        grid_resolution=50, ax=axes[label])
+```
+]
+.center[
+![:scale 50%](images/feat_impo_part_dep_class.png)
+]
+???
+For a multi-class classifier you choose the class with `target`. With gradient boosting and the recursion method the y-axis is the raw decision function (log-odds scale), not a probability. Sepal features are nearly flat; petal length and width separate the classes: setosa for small petals, versicolor in the middle, virginica for large petals. This is the same picture you get from a scatter plot of iris, which is reassuring.
+
+---
+class: spacious
+
+# Types of Feature Selection
+
+- Unsupervised vs Supervised
+- Univariate vs Multivariate
+- Model based or not
+
+???
+Unsupervised methods ignore the target, supervised ones use it. Univariate methods look at one feature at a time, multivariate ones consider features jointly. Model-based methods use a particular estimator to judge features. Every method we see today can be placed on these three axes; it is a useful way to organize them on an exam-style question in your paper proposal.
+
+---
+```python
+from scipy.cluster import hierarchy
+order = np.array(hierarchy.dendrogram(
+    hierarchy.ward(cov), no_plot=True)['ivl'], dtype="int")
+```
+
+.center[
+![:scale 75%](images/img_19.png)
+]
+
+???
+Reorder rows and columns of a correlation matrix by hierarchical clustering before looking at it. On the left the correlated features sit next to each other and the blocks are visible; on the right, in the original order, the structure is hidden. Seaborn's `clustermap` does the same in one call and also draws the dendrogram. Never look at a large correlation matrix in arbitrary column order.
+
+---
+# Changing Lasso alpha
+
+.smaller[
+```python
+from sklearn.linear_model import Lasso
+lasso = Lasso(alpha=0.1).fit(X_train_scaled, y_train)
+print(lasso.coef_)
+```
+```
+[ 0.713  0.109 -0.     0.    -0.    -0.    -0.008 -0.     0.     0.
+  0.    -0.    -0.   ]
+```
+]
+
+.center[
+![:scale 80%](images/img_24.png)
+]
+
+???
+With a larger alpha only three coefficients remain: median income, house age and a tiny one for latitude. Longitude is dropped even though, jointly with latitude, it was important: Lasso keeps one member of a correlated pair. The alpha that is best for prediction is usually smaller than the alpha that gives a small, stable feature set, so tune alpha for the goal you actually have.
+
+---
+class: spacious
+
+# Iterative Model-Based Selection
+
+- Fit model, find least important feature, remove, iterate.
+- Or: Start with single feature, find most important feature, add, iterate.
+
+???
+Dropping many features at once is risky, because importances change after other features are removed: once longitude is gone, latitude's importance changes. Iterative methods refit after each change. They come in two flavors, backward elimination from all features and forward addition from none. Neither is guaranteed to find the best subset.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

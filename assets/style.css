@@ -1,0 +1,202 @@
+@import url('https://fonts.googleapis.com/css2?family=Mulish:ital,wght@0,400;0,700;1,400&family=Source+Serif+4:wght@600&family=Ubuntu+Mono:ital,wght@0,400;0,700;1,400&display=swap');
+
+:root { --text: #1f2933; --accent: #1b3a5c; --accent-light: #e8eef5; --muted: #52606d; }
+body {
+font-family: 'Mulish', 'Muli', 'Helvetica Neue', Arial, sans-serif;
+color: var(--text);
+font-size: 140%;
+}
+h1, h2 {
+font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+color: var(--accent);
+font-weight: 600;
+margin-top: 10px;
+margin-bottom: 10px;
+}
+.remark-slide-content h1 {
+font-size: 58px;
+text-align: center;
+}
+.remark-slide-content p, .remark-slide-content li {
+font-size:30px;
+line-height: 1.4;
+}
+.remark-code {
+font-size:30px;
+}
+.remark-slide-content p {
+    margin: 5px;
+}
+.remark-slide-container .spacious p,
+.remark-slide-container .spacious li{
+    margin-bottom: 50px;
+    margin-top: 50px;
+}
+.remark-slide-container .spacious h1{
+    margin-bottom: 50px;
+}
+.remark-slide-container .some-space p,
+.remark-slide-container .some-space li,
+.remark-slide-container .some-space h1{
+    margin-bottom: 30px;
+}
+.reset-column {
+    overflow: auto;
+    width: 100%;
+}
+.remark-slide-container .compact p, .remark-slide-container .compact li, .remark-slide-container .compact pre{
+line-height: 1.1;
+margin: 0px 0;
+}
+
+.remark-slide-container .compact .MathJax_Display{
+    line-height: 1.1;
+    margin: 1px 0;
+    }
+.remark-slide-container .compact h1, .remark-slide-container .compact h2, .remark-slide-container .compact h3, .remark-slide-container .compact ul{
+margin-bottom: 3px;
+margin-top: 5px;
+}
+.padding-top {
+    padding-top: 100px;
+}
+.remark-slide-content .smaller p, .remark-slide-content .smaller p .MathJax, .remark-slide-content .smaller li,
+.remark-slide-content .smaller .remark-code,  .smaller .remark-code-line,.remark-slide-content .smaller a,
+ .remark-slide-content .smaller .dataframe{
+    font-size: 25px;
+}
+
+.remark-slide-content .smallest p, .remark-slide-content .smallest .MathJax, .remark-slide-content .smallest li, .remark-slide-content .smallest .remark-code,
+.smallest .remark-code-line, .remark-slide-content .smallest .dataframe, .remark-slide-content  span.smallest{
+font-size: 20px;
+}
+.remark-slide-content .tiny p, .remark-slide-content .tiny li, .remark-slide-content .tiny .remark-code,
+.tiny .remark-code-line, .remark-slide-content .tiny .dataframe, .remark-slide-content span.tiny{
+font-size: 16px;
+}
+.remark-slide-content .tiniest p, .remark-slide-content .tiniest li, .remark-slide-content .tiniest .remark-code,
+.tiniest .remark-code-line, .remark-slide-content .tiniest .dataframe, .remark-slide-content span.tiniest{
+font-size: 12px;
+}
+.normal {
+    font-size: 30px;
+}
+.quote_author {
+    display: block;
+    text-align: right;
+    margin-top: 20px;
+    font-size: 30px;
+    font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+color: var(--accent);
+}
+.larger, .larger .remark-code,  .remark-slide-content .larger .MathJax,
+.remark-slide-content .larger p, .remark-slide-content .larger li{
+    font-size: 40px;
+}
+.largest, .largest .remark-code {
+    font-size: 50px;
+}
+.left-column, .right-column {
+    width: 48%;
+}
+.right-column{
+    float: right;
+}
+.left-column{
+    float: left;
+}
+.clear-column{
+    clear: both;
+}
+.narrow-right-column {
+    float: right;
+    width: 32%
+}
+.wide-left-column {
+    float: left;
+    width: 65%
+}
+.narrow-left-column {
+    float: left;
+    width: 32%
+}
+.wide-right-column {
+    float: right;
+    width: 65%
+}
+
+.invisible {
+    visibility: hidden
+}
+.tiny-code .remark-code, .remark-inline-code .tiny-code{
+font-size: 15px;
+}
+.remark-code, .remark-inline-code  { font-family: 'Ubuntu Mono', Menlo, Consolas, monospace;}
+.hljs.remark-code {background: #e0e0e0}
+
+/* Some additional styling taken form the Jupyter notebook CSS */
+table.dataframe {
+border: none;
+border-collapse: collapse;
+border-spacing: 0;
+color: black;
+table-layout: fixed;
+}
+table.dataframe thead {
+border-bottom: 1px solid black;
+vertical-align: bottom;
+}
+table.dataframe tr,
+table.dataframe th,
+table.dataframe td {
+text-align: right;
+vertical-align: middle;
+padding: 0.5em 0.5em;
+line-height: normal;
+white-space: normal;
+max-width: none;
+border: none;
+}
+table.dataframe th {
+font-weight: bold;
+}
+table.dataframe tbody tr:nth-child(odd) {
+background: #f5f5f5;
+}
+table.dataframe tbody tr:hover {
+background: rgba(66, 165, 245, 0.2);
+}
+
+table.alternationg{
+border: none;
+border-collapse: collapse;
+border-spacing: 0;
+
+}
+table.alternating td, table.alternating tr {
+border: none;
+}
+table.alternating tbody tr:nth-child(odd) {
+background: #f0f0f0;
+}
+
+
+/* 2026 refresh: accents, tables, links, inline code */
+.remark-slide-content h1 { border-bottom: 3px solid var(--accent-light); padding-bottom: 6px; }
+.remark-slide-content.center.middle h1, .remark-slide-content.middle h1 { border-bottom: none; }
+.remark-slide-content a { color: var(--accent); text-decoration: none; border-bottom: 1px solid #9fb3c8; }
+.remark-inline-code { background: #f3f5f7; padding: 0 4px; border-radius: 3px; }
+.remark-slide-content table { border-collapse: collapse; margin: 10px auto; }
+.remark-slide-content th { background: var(--accent-light); color: var(--accent); font-weight: 700; }
+.remark-slide-content th, .remark-slide-content td { padding: 4px 12px; border-bottom: 1px solid #d9e2ec; }
+.remark-slide-number { color: var(--muted); font-size: 16px; }
+
+/* Slides that would overflow the 16:9 frame are scaled down proportionally */
+.remark-slide-content.fit  > * { zoom: 0.88; }
+.remark-slide-content.fit2 > * { zoom: 0.78; }
+.remark-slide-content.fit3 > * { zoom: 0.68; }
+.remark-slide-content.fit img  { max-height: 520px !important; object-fit: contain; }
+.remark-slide-content.fit2 img { max-height: 545px !important; object-fit: contain; }
+.remark-slide-content.fit3 img { max-height: 575px !important; object-fit: contain; }
+.remark-slide-content.fit2 .MathJax_Display, .remark-slide-content.fit3 .MathJax_Display,
+.remark-slide-content.fit2 mjx-container[display="true"], .remark-slide-content.fit3 mjx-container[display="true"] { margin: 0.35em 0 !important; }

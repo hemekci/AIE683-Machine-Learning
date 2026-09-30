@@ -1,0 +1,1335 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 10: Unsupervised Learning: Dimensionality Reduction & Clustering</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 10: Unsupervised Learning: Dimensionality Reduction & Clustering
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is our unsupervised week: no target variable, only X. We cover two families of methods that answer different questions. Dimensionality reduction asks "is there a simpler description of these features?", and clustering asks "are there groups of samples?". Both are used constantly in practice for exploration, and both are easy to over-interpret, which is a theme for today.
+
+---
+# Plan for today
+
+.smaller[
+| Block | Content | Time |
+|---|---|---|
+| 1 | Motivating case; PCA; PCA vs LDA | 45 min |
+| 2 | Manifold learning: t-SNE, UMAP; **Try it 1** | 45 min |
+| | Break | 10 min |
+| 3 | k-means, agglomerative, DBSCAN, HDBSCAN, mixture models | 50 min |
+| 4 | Evaluating clusterings, MLflow sweep; **Try it 2** | 30 min |
+]
+
+Notebook: `lab.ipynb` in this week's folder (worked examples, MLflow sweep, both exercises).
+
+???
+This is the roadmap for the three hours. The two "Try it" blocks are hands-on, so please have the lab notebook open and make sure `uv run jupyter lab` works before we start. The lab downloads a small dataset from OpenML, so check your network now rather than during the exercise.
+
+---
+class: fit
+# A case with no labels
+
+.left-column[
+**Wholesale customers** (UCI / OpenML 1511)
+
+- 440 business clients of a food distributor in Portugal
+- annual spend in 6 categories: fresh, milk, grocery, frozen, detergents/paper, delicatessen
+- no "segment" column exists
+
+Questions marketing asks:
+- Are there distinct kinds of customers?
+- Can we see the customer base on one screen?
+- Which customers are unusual?
+]
+.right-column[
+.smaller[
+Other places the same questions come up:
+- single-cell RNA-seq: 20 000 genes per cell, cell types unknown
+- image or product catalogs: find near-duplicates, browse by similarity
+- sensor fleets: which machines behave alike?
+- survey data: respondent profiles
+]
+]
+
+???
+I want to start with a concrete problem rather than an algorithm. A distributor has 440 customers and knows how much each spent per product category, but nobody has ever labeled them. The questions are exactly the ones on the left: groups, a picture, and outliers. Ask the class: how would you even know whether an answer is right when there is no label? Keep that question in mind; we come back to it when we talk about cluster evaluation, and you will work on this dataset in the second exercise.
+
+---
+class: center, middle
+# Part 1: Dimensionality Reduction
+
+???
+Dimensionality reduction takes a dataset with many features and produces a representation with fewer. We use it for four reasons: visualization, compression and denoising, feature extraction for a downstream model, and as a form of regularization. We start with the linear workhorse, PCA.
+
+---
+class: center, middle
+# Principal Component Analysis
+
+???
+PCA is more than a hundred years old and still the first thing to try on continuous data. It is fast, deterministic, and its output can be interpreted in terms of the original features.
+
+---
+class: fit
+.center[
+![:scale 70%](images/pca-intuition.png)
+]
+
+???
+Here is the geometric picture in two dimensions. PCA finds the direction of maximum variance, then the direction of maximum variance orthogonal to the first, and so on; the result is a rotation of the space, with no reduction yet. Dimensionality reduction happens when we drop the low-variance directions, as in the third panel, and rotating back gives the reconstruction in the fourth panel. The assumption is that the data lies close to a lower-dimensional linear subspace, and the discarded directions are mostly noise. Two equivalent objectives, maximum retained variance and minimum reconstruction error, both lead to the SVD of the centered data; the derivations are in the Backup. The sign of a component is arbitrary, so never interpret it on its own.
+
+---
+class: split-40, fit
+# PCA for Visualization
+.tiny-code.left-column[```python
+from sklearn.decomposition import PCA
+print(cancer.data.shape)
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(cancer.data)
+print(X_pca.shape)
+plt.scatter(X_pca[:, 0], X_pca[:, 1], c=cancer.target)
+plt.xlabel("first principal component")
+plt.ylabel("second principal component")
+components = pca.components_
+plt.imshow(components.T)
+plt.yticks(range(len(cancer.feature_names)), cancer.feature_names)
+plt.colorbar()
+```
+```
+(569, 30)
+(569, 2)
+```
+![:scale 70%](images/pca-for-visualization-cancer-data.png)
+]
+.right-column[
+![:scale 55%](images/pca-for-visualization-components-color-bar.png)]
+???
+The breast cancer data has 569 samples and 30 features; with two components we can put it on a screen. PCA does not see the labels; coloring by class afterwards only tells us whether the class structure is visible in the high-variance directions. Now look at the component heat map: essentially two features, mean area and worst area, make up both components. Ask the class why before going to the next slide.
+
+---
+class:spacious
+# Scaling!
+.tiny-code[```python
+pca_scaled = make_pipeline(StandardScaler(), PCA(n_components=2))
+X_pca_scaled = pca_scaled.fit_transform(cancer.data)
+plt.scatter(X_pca_scaled[:, 0], X_pca_scaled[:, 1], c=cancer.target, alpha=.9)
+plt.xlabel("first principal component")
+plt.ylabel("second principal component")
+```]
+.center[![:scale 40%](images/scaled-pca-for-visualization-cancer-data.png)]
+???
+The area features are measured in square units and have values in the thousands, so they have by far the largest variance, and PCA on unscaled data simply picks them. Any feature multiplied by a large constant becomes the first principal component. After standardizing, all 30 features contribute and the classes separate even better. Unless the features share a unit and their scale is meaningful, scale before PCA; this is the same lesson as for kNN and SVMs in earlier weeks.
+
+---
+class: split-40, fit
+# Inspecting components
+.tiny-code[```python
+components = pca_scaled.named_steps['pca'].components_
+plt.imshow(components.T)
+plt.yticks(range(len(cancer.feature_names)), cancer.feature_names)
+plt.colorbar()
+```]
+.smaller.left-column[
+![:scale 55%](images/inspecting-pca-scaled-components.png)
+]
+
+.right-column[
+![:scale 80%](images/inspecting-pca-scaled-components-2.png)]
+
+???
+After scaling, the components are dense: every feature contributes. The first component is roughly an average of all size-related features, a "tumor size" axis; the second contrasts the fractal dimension and smoothness features with the size features. The scatter plot on the right shows each original feature's loading on the first two components. Remind students again that the sign is arbitrary, so "negative loading" only has meaning relative to other features on the same component.
+
+---
+# PCA for regularization
+.tiny-code[
+```python
+X_train, X_test, y_train, y_test = train_test_split(cancer.data, cancer.target,
+                                                    stratify=cancer.target, random_state=0)
+lr = make_pipeline(StandardScaler(), LogisticRegression(C=10000, max_iter=10000))
+lr.fit(X_train, y_train)
+print(lr.score(X_train, y_train), lr.score(X_test, y_test))
+```
+```
+1.000 0.930
+```
+```python
+pca_lr = make_pipeline(StandardScaler(), PCA(n_components=2), LogisticRegression(C=10000))
+pca_lr.fit(X_train, y_train)
+print(pca_lr.score(X_train, y_train), pca_lr.score(X_test, y_test))
+```
+```
+0.960 0.923
+```
+]
+???
+Here we effectively switch off the L2 penalty with C=10000 and instead restrict the input to a few principal components; in statistics this is called principal component regression. Without the restriction the model fits the training data perfectly and gets 93 percent on the test set. With only two components we underfit: training accuracy drops to 96 percent and test accuracy drops slightly too. The number of components is a hyperparameter like any other, so the clean answer is to tune it by cross-validation inside the pipeline, as in Week 8.
+
+---
+# Variance covered
+.center[
+![:scale 45%](images/variance-covered.png)
+]
+.tiny-code[```python
+pca_lr = make_pipeline(StandardScaler(), PCA(n_components=6), LogisticRegression(C=10000))
+pca_lr.fit(X_train, y_train)
+print(pca_lr.score(X_train, y_train), pca_lr.score(X_test, y_test))
+```
+```
+0.981 0.958
+```
+```python
+PCA(n_components=0.95)  # keep as many components as needed for 95% of the variance (here: 10)
+```]
+
+???
+The explained variance ratio is the variance of each component divided by the total; the log-scale plot below makes the tail readable. Looking for a kink suggests about six components, and with six we get 95.8 percent test accuracy, better than either extreme. Passing a float such as 0.95 to `n_components` selects the number of components by retained variance. This is a heuristic: PCA is unsupervised and may discard directions that matter for the target, as the next slide shows.
+
+---
+class: split-40, fit
+# PCA is Unsupervised!
+.left-column[
+![:scale 100%](images/pca-is-unsupervised-1.png)
+]
+--
+.right-column[
+![:scale 100%](images/pca-is-unsupervised-2.png)
+]
+???
+This synthetic dataset is built so that the class depends only on the direction of smallest variance. In the original features it looks unstructured, and after PCA the first two components are pure noise with respect to the class, while the third component separates it perfectly. Dropping low-variance components is a feature selection step that ignores the target. Ask: in which real problems could the signal be small in variance? Rare fault signatures and subtle biomarkers are typical examples.
+
+---
+class:center
+# PCA vs Linear Discriminants
+![:scale 100%](images/pca-lda.png)
+???
+Linear discriminant analysis is the supervised counterpart of PCA: it models each class as a Gaussian with one shared covariance, and projects onto the directions that separate the class means relative to the within-class spread, at most n_classes minus 1 of them (`LinearDiscriminantAnalysis(n_components=...)`). The derivation and QDA are in the Backup; beware that the acronym LDA also means latent Dirichlet allocation. Here: three classes that share an elongated covariance. PCA, being unsupervised, finds the long axis of the overall cloud, along which all three classes overlap. LDA finds the directions that separate the class means relative to the within-class spread, and the first discriminant alone separates all three classes. This is the case LDA is designed for.
+
+---
+# Summary: linear methods
+- PCA: visualization, exploring correlations, compression, denoising
+- PCA can help as regularization or feature extraction, but it ignores the target
+- Scale features first unless they share a meaningful unit
+- LDA: supervised linear projection, at most `n_classes - 1` dimensions
+???
+PCA is my default first look at continuous data, and it is a reasonable preprocessing step for distance-based models on wide data. As a regularizer for linear models, a tuned L2 penalty usually does as well or better. LDA is the supervised alternative when you want a linear view that respects the classes. Next we give up linearity.
+
+---
+class: center, middle
+# Manifold Learning
+???
+Manifold learning methods assume the data lies on a low-dimensional, curved surface embedded in the high-dimensional space. They produce non-linear embeddings, mostly for visualization. We focus on the two that dominate practice today: t-SNE and UMAP.
+
+---
+class: center, middle
+![:scale 60%](images/manifold-learning-structure.png)
+???
+The classic example is the Swiss roll: a two-dimensional sheet rolled up in three dimensions. Points of the same color are close along the sheet, but points on neighboring layers are close in Euclidean distance while far apart along the sheet. Any linear projection, including PCA, will mix the layers. A manifold learning method should unroll the sheet using only local neighborhoods.
+
+---
+# Pros and Cons
+- Mostly for visualization and exploration
+- Axes do not correspond to anything in the input space
+- Many methods cannot embed new points (scikit-learn's `TSNE` has no `transform`)
+- UMAP can transform new points, but is still best treated as exploratory
+- Results depend on hyperparameters and random seeds
+???
+These methods produce good-looking pictures, and that is both their strength and their danger. The axes have no meaning, distances between far-apart groups are often not preserved, and the picture can change with the seed and with the hyperparameters. Using a t-SNE embedding as input features for a model is usually a mistake, because you cannot apply the same transformation to new data. UMAP does have a `transform` method, which we will use, but I still treat these embeddings as a tool for looking, not as a pipeline step.
+
+---
+# t-SNE in practice
+
+.smaller[
+- Directly optimizes 2D positions `$y_i$` by gradient descent (no mapping is learned)
+- Local neighborhoods matter; global distances much less
+- Heavy-tailed Student-t in 2D avoids crowding
+- Perplexity sets `$\sigma_i$`: the effective number of neighbors
+]
+
+???
+t-SNE turns distances in the input space into neighbor probabilities with a Gaussian kernel, uses a heavy-tailed Student-t kernel for the 2D positions, and moves the positions to minimize the KL divergence between the two; the formulas are in the Backup. Three consequences are what to remember. t-SNE moves the points of the embedding directly, so there is no model you can apply to new data. It preserves neighbourhoods, not distances, so the size of a cluster and the gaps between clusters in the plot mean little. Perplexity is the knob: it sets how many neighbours each point tries to keep.
+
+---
+class: split-40
+.smaller[```python
+from sklearn.manifold import TSNE
+from sklearn.datasets import load_digits
+digits = load_digits()
+X = digits.data / 16.
+X_tsne = TSNE(random_state=0).fit_transform(X)   # defaults: init="pca", learning_rate="auto", max_iter=1000
+X_pca = PCA(n_components=2).fit_transform(X)
+```]
+.left-column[![:scale 80%](images/pca-digits.png)]
+--
+.right-column[![:scale 80%](images/tsne-digits.png)]
+???
+Digits: 1,797 images of 8 by 8 pixels, so 64 dimensions. The PCA projection separates a few digits, such as zeros, and mixes the rest. t-SNE, which also never sees the labels, places almost every digit class in its own compact group. Current scikit-learn defaults are PCA initialization and an automatic learning rate, which make runs more stable and preserve more global structure than the old random initialization; the number of iterations is now called `max_iter`.
+
+---
+class:center
+![:scale 50%](images/tsne-embeddings-digits.png)
+???
+Drawing thumbnails on the embedding is how t-SNE is used for exploration. You can see sub-groups within a class, for example ones written with and without a base stroke, and individual digits that sit in the wrong group, which are candidates for label errors or genuinely ambiguous samples. The axes carry no meaning; rotating or mirroring the picture changes nothing.
+
+---
+class: split-40
+# Tuning t-SNE perplexity: 2 and 5
+.left-column[
+![:scale 80%](images/tsne-tuning-2.png)]
+.right-column[
+![:scale 80%](images/tsne-tuning-5.png)]
+???
+Perplexity is the main hyperparameter: roughly how many neighbors each point considers. At 2 the embedding breaks into many tiny fragments, and even at 5 many digit classes are split into several pieces. These fragments are an artifact of looking at too few neighbors, not sub-groups in the data.
+
+---
+class: split-40
+# Tuning t-SNE perplexity: 30 and 300
+.left-column[
+![:scale 80%](images/tsne-tuning-30.png)]
+.right-column[
+![:scale 80%](images/tsne-tuning-300.png)]
+???
+At 300 the embedding becomes smoother and more global, but classes start to merge. The default of 30 works well on many datasets of a few thousand points, and larger datasets often benefit from larger values. Always look at more than one setting before interpreting structure.
+---
+# What goes wrong in practice: reading t-SNE plots
+
+.center[![:scale 75%](images/tsne-noise.png)]
+
+.smaller[
+- Low perplexity creates "clusters" in pure Gaussian noise (left).
+- Cluster **sizes** and **distances between clusters** in the plot are not meaningful.
+- One seed, one perplexity is not an analysis. Compare several runs.
+- Read more: https://distill.pub/2016/misread-tsne/
+]
+???
+These are 500 samples of 50-dimensional Gaussian noise, with no structure at all. At perplexity 2, t-SNE shows many small clumps that a hopeful analyst could call clusters. At 30 or 100 it shows a uniform ball, which is the honest answer. Ask the class: if someone shows you one t-SNE plot with nicely separated groups, what would you ask them? The seed, the perplexity, whether groups persist across settings, and whether a clustering in the original space agrees. The distill article is worth ten minutes of your time after class.
+
+---
+class:split-40
+# UMAP
+.left-column[
+.smaller[
+- Build a weighted k-nearest-neighbor graph in input space
+- Find a low-dimensional layout whose graph matches (cross-entropy)
+- Usually faster than t-SNE on large data; often keeps more global structure
+- Has `transform`: embeds new points
+]
+.tiny-code[```python
+import umap   # pip/uv package: umap-learn
+
+reducer = umap.UMAP(n_neighbors=15, min_dist=0.1,
+                    random_state=0)
+Z_train = reducer.fit_transform(X_train)
+Z_test = reducer.transform(X_test)
+```]
+]
+.right-column[
+![:scale 100%](images/umap-digits.png)
+]
+???
+UMAP builds a fuzzy k-nearest-neighbor graph in the input space and optimizes a low-dimensional layout so that its graph matches, using a cross-entropy loss that also includes a repulsive term. In practice the results look similar to t-SNE, it scales better, and it tends to keep more of the relative position of groups. The package is `umap-learn`, imported as `umap`, and it follows the scikit-learn API. Unlike scikit-learn's TSNE it has a `transform` method: on the right, test digits land in the region of their class. Setting `random_state` makes it reproducible but disables parallelism, which is why you will see a warning.
+
+---
+# UMAP hyperparameters
+
+.center[![:scale 42%](images/umap-params.png)]
+
+.smaller[`n_neighbors`: local vs global structure (like perplexity) · `min_dist`: how tightly points may be packed]
+???
+The two parameters to know: `n_neighbors` plays the role of perplexity, trading local detail for global structure, and `min_dist` controls how tightly points may be packed in the layout. Small `min_dist` gives dense clumps, useful before clustering; large `min_dist` spreads points out, which is better for seeing continuous structure. The same caution as for t-SNE applies: distances between clusters and cluster sizes are not reliable.
+
+---
+# PCA, t-SNE or UMAP?
+
+.smaller[
+| | PCA | t-SNE | UMAP |
+|---|---|---|---|
+| linear | yes | no | no |
+| deterministic | yes | no (seed) | no (seed) |
+| embeds new points | yes | no (scikit-learn) | yes |
+| preserves | global variance | local neighborhoods | local, some global |
+| speed, 100k points | seconds | minutes | about a minute |
+| axes interpretable | yes (loadings) | no | no |
+| use as model features | yes | no | with care |
+]
+???
+My practical rule: start with PCA, because it is fast, deterministic and interpretable, and it often shows the main structure already. Use t-SNE or UMAP when you want to see local neighborhood structure, and check several settings. A common and reasonable pipeline is PCA to about 50 dimensions first, then t-SNE or UMAP on top, which removes noise and speeds things up. The timings are rough orders of magnitude on a laptop.
+
+---
+class: fit
+# Try it 1: Which map keeps the neighbors? (15 min)
+
+`lab.ipynb`, section **Try it 1** (digits data)
+
+1. **Predict first**: rank PCA, t-SNE and UMAP by how well a 2D map preserves each point's 10 nearest neighbors. Write your ranking down.
+2. Add t-SNE and UMAP to `embeddings` and run the cell. It reports
+   - `trustworthiness(X, Z, n_neighbors=10)` (1.0 = neighbors in 2D were neighbors in 64D)
+   - 5-fold CV accuracy of 1-NN on the 2D coordinates
+3. Change `n_neighbors` to 50 in `trustworthiness`. Does the ranking change?
+4. Discuss: why is 1-NN accuracy on a t-SNE map an optimistic estimate of how good a classifier would be?
+
+???
+Give students two minutes to commit to a prediction before they run anything; the point is to test intuition. Expected result: t-SNE and UMAP have trustworthiness around 0.99 and 1-NN accuracy around 97 percent, PCA about 0.83 and 57 percent. For question 4, the key insight is that the t-SNE embedding was computed on all points, including those that later act as test folds, so the neighborhood structure of the test points leaked into the representation; also, there is no way to embed a truly new point with scikit-learn's TSNE. Collect a few rankings from the room before revealing the numbers.
+
+---
+class: center, middle
+# Break (10 min)
+
+???
+Take a ten-minute break. When we come back, we move from reducing features to grouping samples.
+
+---
+class: center, middle
+
+# Part 2: Clustering and Mixture Models
+
+???
+In the second half we look at clustering: k-means, agglomerative clustering, DBSCAN and HDBSCAN, and Gaussian mixture models. Then we spend real time on how to evaluate a clustering, because that is where most practical mistakes happen.
+
+---
+.center[
+![:scale 60%](images/cluster_intro_3.png)
+]
+???
+We start from points that we assume fall into groups, with no labels; here the three groups are easy to see, which is rarely true in more than two dimensions. A clustering algorithm returns an integer label per point, numbered 0 to n_clusters minus 1. The numbers themselves are arbitrary: permuting them gives the same clustering. What matters is which points share a label. This is why we cannot evaluate clusterings with accuracy, and why the external metrics we see later are invariant to relabeling.
+
+---
+class: spacious
+# Clustering
+
+- Partition data into groups (clusters)
+- Points within a cluster should be "similar"
+- Points in different clusters should be "different"
+- Number of clusters often has to be specified
+- "Similar" is defined by the algorithm and by your features and metric
+
+???
+Clustering partitions the data so that each point belongs to one group, with similar points together. Every algorithm formalizes "similar" differently, and the features and their scaling define the geometry the algorithm sees. That means preprocessing decisions are modeling decisions here, even more than in supervised learning.
+
+---
+.center[
+![:scale 60%](images/cluster_intro_4.png)
+]
+
+???
+If we ask for four clusters on this data, we get four clusters: the algorithm will happily split one real group. Many algorithms need the number of clusters in advance, and in real data there is often no single right number, only more or less useful groupings. Ask: for the wholesale customers, what would make one number of segments better than another? Usually the answer comes from how the segments will be used.
+
+---
+# Goals of Clustering
+
+- Data exploration
+  - Are there coherent groups? How many?
+--
+
+- Data partitioning
+  - Divide data by group before further processing (e.g. one model per segment)
+--
+
+- Unsupervised feature extraction
+  - Derive features from cluster membership or distances
+--
+
+- Evaluation and parameter tuning
+  - Quantitative measures exist but are of limited use
+  - Qualitative inspection is common
+  - Best: a downstream task. What is your goal?
+???
+The most common use is exploration: understanding the structure of the data. Customer segmentation is the textbook example and it is a partitioning use: once you have segments, marketing treats them differently. Clusters can also be features for a supervised model. The last bullet is the uncomfortable one: without labels, evaluation is hard, and the best evaluation is whether the clustering helps the task it was made for.
+
+---
+class: center, middle
+
+# K-Means
+
+???
+We start with k-means, the most widely used clustering algorithm. k is the number of clusters, and you have to choose it.
+
+---
+# Objective function for K-Means
+<br \>
+<br \>
+`$$\Large \min_{\mathbf{c}_j \in \mathbf{R}^p, j=1,..,k} \sum_i ||\mathbf{x}_i - \mathbf{c}_{x_i}||^2 $$`
+$\mathbf{c}_{x_i}$ is the cluster center $c_j$ closest to $x_i$
+???
+k-means minimizes the sum of squared distances from each point to its nearest center, called the inertia or within-cluster sum of squares. Finding the global minimum is NP-hard, so the algorithm we use finds a local minimum that depends on initialization. Because the objective uses squared Euclidean distance, scaling and outliers matter a lot.
+
+---
+class: fit
+# K-Means algorithm (Lloyd's)
+.wide-left-column[
+.center[
+![:scale 100%](images/kmeans.png)
+]
+]
+
+.narrow-right-column[
+.smaller[
+- Pick number of clusters k.
+- Pick k initial centers.
+- While cluster centers change:
+  1. Assign each point to its closest center.
+  2. Recompute each center as the mean of its points.
+]
+]
+
+???
+Lloyd's algorithm alternates two steps: assign each point to the nearest center, then move each center to the mean of its assigned points. Each step can only decrease the objective, so the algorithm always converges, usually in a few dozen iterations. New points can be assigned by the same nearest-center rule, which is why k-means has a `predict` method and not all clustering algorithms do. Ask who has implemented this before; it is a ten-line numpy exercise.
+
+---
+# K-Means API
+
+.narrow-right-column[
+.center[
+![:scale 100%](images/kmeans_api.png)
+]
+]
+
+.wide-left-column[
+.smaller[
+```python
+X, y = make_blobs(centers=4, random_state=1)
+
+km = KMeans(n_clusters=5, random_state=0)
+km.fit(X)
+print(km.cluster_centers_.shape)
+print(km.labels_.shape)
+```
+```
+(5, 2)
+(100,)
+```
+```python
+# predict is the same as labels_ on training data
+# but can be applied to new data
+print(km.predict(X).shape)
+```
+```
+(100,)
+```
+```python
+plt.scatter(X[:, 0], X[:, 1], c=km.labels_)
+```
+
+]
+]
+
+???
+The API follows the estimator pattern. After `fit`, `cluster_centers_` has one row per cluster in the input space, and `labels_` has one label per training point. `predict` assigns new points to the nearest center, and `transform` returns the distances to all centers. Here I asked for five clusters on data generated from four, and k-means dutifully split one blob.
+
+---
+# Restriction of Cluster Shapes
+.left-column[
+![:scale 75%](images/cluster_shapes_1.png)
+]
+.right-column[
+![:scale 75%](images/cluster_shapes_2.png)
+]
+.reset-column[
+Clusters are Voronoi cells of the centers: always convex
+]
+
+???
+Because every point goes to its nearest center, the clusters are Voronoi cells: the boundary between two clusters is the perpendicular bisector between their centers. The whole clustering is determined by the centers alone. Every cell is convex, so k-means cannot represent a banana-shaped or ring-shaped cluster.
+
+---
+class: fit2
+# Limitations of K-Means
+
+.left-column[
+.smaller[![:scale 60%](images/kmeans_limitations_1.png)
+Boundaries equidistant to centers: clusters of different spread]
+.smaller[![:scale 60%](images/kmeans_limitations_2.png)
+Cannot model covariance]
+]
+.right-column[
+.smaller[![:scale 60%](images/kmeans_limitations_3.png)
+Only simple (convex) shapes]
+]
+
+???
+Three typical failures. With clusters of very different spread, the boundary sits halfway between centers, so the wide cluster loses points to the narrow ones. With elongated, correlated clusters, k-means cuts across them because it implicitly assumes spherical clusters of equal size. With non-convex shapes such as two moons, it can only draw a straight line. Despite this, k-means is very widely used because it is fast, simple, and often good enough for partitioning and feature extraction.
+
+---
+# Initialization
+
+- Random centers: fast but poor local optima
+- k-means++ (default): sample new centers with probability ∝ squared distance to existing ones
+- `n_init="auto"` (default): 1 run with k-means++, 10 runs with random init; best inertia is kept
+- For large data, k-means++ itself can be expensive; set `n_init` explicitly
+
+???
+k-means++ chooses the first center at random, then samples each next center with probability proportional to its squared distance from the closest center chosen so far. This spreads the centers out and comes with a guarantee of being within a logarithmic factor of the optimum in expectation. Since scikit-learn 1.4 the default `n_init="auto"` runs k-means++ once; older tutorials say it restarts ten times. If results vary between seeds on your data, increase `n_init`; I do this in the lab.
+
+---
+class: center, middle
+
+# Agglomerative Clustering
+
+???
+The next family is hierarchical clustering, built bottom-up by merging.
+
+---
+# Agglomerative Clustering
+
+- Start with all points in their own cluster.
+- Greedily merge the two most similar clusters.
+- Result: a hierarchy of clusterings from n_samples clusters down to one.
+
+.center[
+![:scale 70%](images/agglomerative_clustering.png)
+]
+
+???
+Every point starts as its own cluster, and at each step the two closest clusters are merged. Continuing until one cluster remains gives a complete hierarchy; you cut it either at a number of clusters or at a distance threshold. Here we stopped at three clusters. Like k-means, the result is a partition, but you get all granularities from one run.
+
+---
+class: spacious
+
+# Dendrograms
+
+.left-column[
+![:scale 100%](images/dendograms_1.png)
+]
+
+.right-column[
+![:scale 80%](images/dendograms_2.png)
+.tiny-code[```python
+from scipy.cluster.hierarchy import dendrogram, ward
+dendrogram(ward(X))
+```]
+]
+
+???
+A dendrogram draws the merge hierarchy as a tree: leaves are samples, and the height of each join is the distance at which the two clusters were merged. Long vertical gaps indicate well separated groups, so cutting the tree across the longest gap is a sensible way to pick the number of clusters; here that suggests three. scikit-learn's `AgglomerativeClustering` does the clustering, and scipy's `dendrogram` draws the tree. Dendrograms are useful for small to medium datasets; with millions of points they become unreadable. The linkage criterion defines the distance between clusters: Ward, the default, merges the pair that increases within-cluster variance least and gives balanced clusters, while single linkage follows chains and isolates outliers. Without a connectivity graph the cost is at least quadratic in n, and there is no `predict` for new points (linkage comparison in Backup).
+
+---
+class: center, middle
+
+# DBSCAN
+
+???
+DBSCAN, from 1996, is density-based: clusters are regions of high point density separated by low density. It is often very useful in practice.
+
+---
+# Algorithm
+.left-column[
+![:scale 100%](images/DBSCAN-Illustration.svg)
+]
+.right-column[
+- eps: neighborhood radius
+- min_samples: 4
+<br /><br />
+
+- A: core point
+- B, C: reachable, not core (border points)
+- N: noise
+]
+???
+Two parameters: the radius eps and min_samples. A core point has at least min_samples points, itself included, within distance eps. The algorithm starts at a core point, adds all points within eps to its cluster, and recursively expands from those neighbors that are also core points; border points such as B and C join the cluster but do not expand it. When no more points are reachable it starts a new cluster from another unvisited core point. Points that are not reachable from any core point, such as N, are labeled noise with the label -1. This notion of noise is what distinguishes DBSCAN from the algorithms so far.
+
+---
+# Illustration of Parameters
+
+.center[
+![:scale 60%](images/dbscan_illustration.png)
+]
+
+???
+Large markers are core points, small ones border points, white ones noise. Increasing min_samples turns small groups into noise; increasing eps makes more points neighbors and merges clusters, so you get fewer but larger clusters. Because eps is a distance, its meaning depends on the scale of your features; standardize first. A practical way to choose eps is to plot the sorted distance of each point to its min_samples-th neighbor and look for the knee.
+
+---
+# Pros and Cons
+
+- Pro: arbitrary cluster shapes
+- Pro: detects noise points
+- Pro: fast with a spatial index
+- Con: two parameters, and eps is a single global density threshold
+- Con: no `predict` for new points
+
+.center[
+![:scale 40%](images/dbscan_pro_con.png)
+]
+
+???
+DBSCAN finds the two moons, which neither k-means nor Ward can, because it only works locally. It labels outliers as noise, which is often what you want. Its main weakness is the single eps: if clusters have different densities, no single radius works for all of them. That motivates HDBSCAN on the next slide.
+
+---
+# HDBSCAN
+
+.left-column[
+.smaller[
+- Runs DBSCAN for **all** eps at once (hierarchy of density levels)
+- Keeps the most stable clusters across levels
+- Main parameter: `min_cluster_size` (smallest group you care about)
+- Handles clusters of different density; labels noise as -1
+- `sklearn.cluster.HDBSCAN` (since 1.3)
+]
+.tiny-code[```python
+from sklearn.cluster import HDBSCAN
+
+hdb = HDBSCAN(min_cluster_size=25, copy=True).fit(X)
+hdb.labels_          # -1 = noise
+hdb.probabilities_   # strength of membership
+```]
+]
+.right-column[
+.smaller[
+Typical use:
+- exploratory clustering when k is unknown
+- clustering UMAP embeddings (with small `min_dist`)
+- when outliers must not be forced into a cluster
+]
+]
+???
+HDBSCAN (2013) removes the need to pick eps. Conceptually it considers every density threshold, builds the hierarchy of clusters that appear and disappear as the threshold changes, and keeps the clusters that persist over the widest range. The parameter you set, `min_cluster_size`, is intuitive: the smallest group that should count as a cluster. It is now in scikit-learn, and in my experience it is the best default when you do not know the number of clusters. The `copy=True` argument only avoids a future-change warning in current scikit-learn.
+
+---
+# DBSCAN vs HDBSCAN: clusters of different density
+
+.center[![:scale 95%](images/hdbscan-vs-dbscan.png)]
+
+???
+One dense blob, one sparse blob, two moons, and uniform background noise. With a small eps, DBSCAN fragments the sparse blob into noise and small pieces; with a large eps it merges the moons into one cluster with the sparse blob. There is no eps that gets everything right. HDBSCAN recovers the four groups and labels the background as noise. Ask: in the wholesale data, what would the noise points mean? Customers with unusual baskets, which may be exactly the ones marketing wants to look at.
+
+---
+class: center, middle
+
+# (Gaussian) Mixture Models
+
+???
+Gaussian mixture models are a probabilistic generalization of k-means. They give a density model, soft assignments, and cluster shapes with covariance.
+
+---
+# Mixture Models
+
+- Generative model: find p(X).
+
+` $$ p(\mathbf{x}) = \sum_{k=1}^K \pi_k p_k(\mathbf{x} | \theta_k) $$ `
+
+- Data is a mixture of a small number of simple distributions
+- Each point comes from one component
+- Learn the component parameters `$\theta_k$` and weights `$\pi_k$`
+
+???
+A mixture model writes the data density as a weighted sum of K simple component densities. The weights pi_k are non-negative and sum to one. The modeling assumption is that each point was generated by exactly one component, but we do not know which. Fitting means estimating each component's parameters and the weights.
+
+---
+class: fit2
+# Gaussian Mixture Models
+
+`$$ p(\mathbf{x}) = \sum_{k=1}^K \pi_k \mathcal{N}(\mathbf{x}; \mu_k, \Sigma_k) $$`
+
+`$$ z \sim \text{Categorical}(\pi), \quad \mathbf{x} \mid z=k \sim \mathcal{N}(\mu_k, \Sigma_k)$$`
+
+--
+
+- Non-convex likelihood: initialized with k-means, optional restarts (`n_init`)
+- Optimization with the EM algorithm:
+    - E-step: compute responsibilities `$r_{ik} = P(z_i = k \mid \mathbf{x}_i)$` (soft assignments)
+    - M-step: update `$\pi_k, \mu_k, \Sigma_k$` as responsibility-weighted averages
+    - Iterate until the log-likelihood stops improving
+???
+For a Gaussian mixture, each component is a Gaussian with its own mean and covariance. The second line is the generative story: draw a component z from the categorical distribution with weights pi, then draw x from that component's Gaussian. EM alternates between computing, for each point, the posterior probability of each component, and re-estimating the parameters with those probabilities as weights. Compare with k-means: hard assignments become soft, and besides means we estimate covariances and weights. k-means is the limit of EM for spherical covariances shrinking to zero.
+
+---
+class: spacious
+# Why Mixture Models?
+
+- Clustering (each component is a cluster), with soft assignments
+- Parametric density model: how likely is a new point?
+  - outlier / novelty scores (Week 12)
+  - generative classifiers: one mixture per class
+- Sampling new synthetic points
+
+???
+We get more than a clustering. Because the model is a density, we can score how likely a new point is, which is the basis of density-based anomaly detection that we return to in Week 12. We can build a classifier by fitting one mixture per class and applying Bayes' rule, a direct generalization of LDA and QDA (see Backup). And we can sample from the model. `predict_proba` gives the soft assignments and `score_samples` the log density of each point.
+
+---
+# Examples
+
+.wide-left-column[
+.smaller[
+```python
+from sklearn.mixture import GaussianMixture
+gmm = GaussianMixture(n_components=3, random_state=0)
+gmm.fit(X)
+print(gmm.means_)
+print(gmm.covariances_)
+```
+```
+[[ 8.701  5.21 ]
+ [-0.282  6.829]
+ [-2.331 -4.745]]
+[[[ 1.44  -1.108]
+  [-1.108  4.187]]
+ [[ 5.836 -3.678]
+  [-3.678  5.137]]
+ [[ 6.441  1.789]
+  [ 1.789 13.352]]]
+```
+]
+]
+
+.narrow-right-column[
+.center[
+![:scale 70%](images/mm_examples_1.png)
+]]
+--
+.narrow-right-column[
+.center[
+![:scale 70%](images/mm_examples_2.png)
+]
+]
+
+???
+The API is the same as for k-means, with `n_components` instead of `n_clusters`. After fitting we get one mean per component and one full covariance matrix per component. The three covariances differ in spread and orientation: the third component is much more spread out vertically, something k-means cannot express.
+
+---
+class:center
+# GMM vs KMeans
+
+![:scale 40%](images/gmm_vs_kmeans_1.png)<br />
+![:scale 40%](images/gmm_vs_kmeans_2.png)
+
+???
+The two cases where k-means failed: correlated clusters on top and clusters of different spread below. The Gaussian mixture recovers both, because it models covariance and component weights. Be fair about this: the data was generated from Gaussians, so the model is correct by construction. On real data neither the Gaussian shape nor the number of components is known, and GMMs are more expensive and more sensitive to initialization than k-means.
+
+---
+# Choosing the number of components: BIC
+
+.left-column[
+`$$\text{BIC} = -2 \log \hat{L} + d \log n$$`
+.smaller[
+- `$d$`: number of free parameters, `$n$`: number of samples
+- lower is better; penalizes extra components and covariance parameters
+]
+.tiny-code[```python
+bics = [GaussianMixture(n, covariance_type="full", n_init=3,
+                        random_state=0).fit(X).bic(X)
+        for n in range(1, 9)]
+```]
+]
+.right-column[
+![:scale 100%](images/gmm-bic.png)
+]
+
+???
+Because a GMM is a likelihood model, we can compare numbers of components with an information criterion. BIC is minus two times the log-likelihood plus the number of parameters times log n; more components always increase the likelihood, and the penalty stops that. On the elongated-blobs data, BIC with full covariances is minimized at three components, the true number, while spherical and diagonal models keep wanting more components to approximate the elongated shapes. `covariance_type` (spherical, diag, tied, full) controls how many covariance parameters each component has, and it is selected by BIC together with the number of components. `BayesianGaussianMixture` is an alternative that switches off unneeded components automatically.
+
+---
+class: center, middle
+# Evaluating Clusterings
+
+???
+Now the question from the start of the lecture: how do we know whether a clustering is good? There are internal measures, which use only the data, and external measures, which compare with known labels.
+
+---
+class: fit
+# Internal: silhouette coefficient
+
+.left-column[
+`$$s(i) = \frac{b(i) - a(i)}{\max(a(i), b(i))} \in [-1, 1]$$`
+.smaller[
+- `$a(i)$`: mean distance to points in its own cluster
+- `$b(i)$`: mean distance to points in the nearest other cluster
+- `silhouette_score` = mean of `$s(i)$`; also `davies_bouldin_score`, `calinski_harabasz_score`
+]
+.tiny-code[```python
+from sklearn.metrics import silhouette_score
+for k in range(2, 9):
+    labels = KMeans(n_clusters=k, random_state=0).fit_predict(X)
+    print(k, silhouette_score(X, labels))
+```]
+]
+.right-column[
+![:scale 100%](images/silhouette-k.png)
+]
+???
+For each point, a is the average distance to its own cluster and b the average distance to the nearest other cluster. The silhouette is close to 1 when the point is much closer to its own cluster, near 0 on a boundary, and negative when it probably belongs elsewhere. Averaging over points gives one score per clustering, which we can compare across k; here it peaks at the true number of four. The per-sample plot on the right shows which clusters are compact and which contain poorly assigned points. It costs O(n squared) distances, so subsample large datasets with the `sample_size` argument.
+
+---
+# External: ARI and AMI (when labels exist)
+
+.smaller[
+- Compare a clustering with a reference partition (true labels, or another clustering)
+- Invariant to permuting cluster ids, adjusted so that random labelings score about 0
+- **ARI** (adjusted Rand index): agreement over all pairs of points; 1 = identical partitions
+- **AMI** (adjusted mutual information): shared information, adjusted for chance; less biased with many small clusters
+]
+.tiny-code[```python
+from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score
+adjusted_rand_score(y_true, labels), adjusted_mutual_info_score(y_true, labels)
+adjusted_rand_score([0, 0, 1, 1], [1, 1, 0, 0])   # 1.0: same partition, different ids
+```]
+
+.smaller[Uses: benchmarking algorithms on labeled data, checking stability across seeds or bootstrap samples, comparing to a known business category.]
+???
+When a reference partition exists, we compare against it with measures that ignore the arbitrary label numbers. ARI counts pairs of points on which the two partitions agree, both together or both apart, and corrects for chance so random labelings get about zero. AMI measures shared information and is preferred when clusters are small and numerous. Never use accuracy for this: the label numbers do not correspond. A very useful application without ground truth is stability: cluster two bootstrap samples or two seeds and compute ARI between them; an unstable clustering should not be interpreted.
+
+---
+class: fit
+# What goes wrong: internal scores have their own bias
+
+.center[![:scale 70%](images/silhouette-moons.png)]
+
+.smaller[
+- Silhouette rewards compact, convex, well-separated blobs: it prefers k-means here (0.49) over the correct DBSCAN solution (0.33, ARI = 1.00).
+- Scores computed in different feature spaces (raw vs scaled vs log) are not comparable.
+- A "best k" from silhouette, inertia elbow or BIC is a suggestion, not a fact.
+]
+???
+This is the pitfall I most want you to remember. Silhouette is based on average distances, so it encodes the same convexity assumption as k-means, and on the two moons it gives the wrong solution a higher score than the right one. Every internal score has such a built-in notion of what a good cluster is. Also, the score is computed in your feature space: changing the scaling changes the geometry and the score, so compare clusterings only within the same representation. Ask the class which score they would trust for HDBSCAN output; the honest answer is none of them fully, and you should look at the clusters.
+
+---
+# Tracking a clustering sweep with MLflow
+
+.tiny-code[```python
+import mlflow
+mlflow.set_experiment("week10-clustering")
+for k in range(2, 9):
+    km = KMeans(n_clusters=k, n_init=10, random_state=0).fit(X)
+    gmm = GaussianMixture(n_components=k, n_init=3, random_state=0).fit(X)
+    with mlflow.start_run(run_name=f"k={k}"):
+        mlflow.log_params({"k": k, "preprocessing": "log1p+standardize"})
+        mlflow.log_metrics({"kmeans_silhouette": silhouette_score(X, km.labels_),
+                            "kmeans_inertia": km.inertia_,
+                            "gmm_bic": gmm.bic(X)})
+runs = mlflow.search_runs(experiment_names=["week10-clustering"])
+```]
+
+.smaller[Wholesale customers, log + standardized: silhouette peaks at k = 2 (0.29), GMM BIC at k = 3. The criteria disagree, which is normal.]
+???
+Model selection for clustering is a sweep like any hyperparameter search, so we log it the same way as in Week 8. Each k is a run with its parameters and the internal metrics; afterwards `search_runs` returns a data frame, and `mlflow ui` lets you compare runs visually. Logging the preprocessing as a parameter matters, because as we just saw the scores depend on it. On the wholesale data, silhouette prefers two clusters and BIC three, so the decision has to come from interpreting the segments.
+
+---
+# Try it 2: Segment the customers (15 min, teams of 2–3)
+
+`lab.ipynb`, section **Try it 2** (wholesale customers)
+
+1. Start from the baseline: raw spend, k-means, k = 2.
+2. Choose preprocessing (raw / log / log + standardize), an algorithm (k-means, GMM, HDBSCAN, agglomerative) and its parameters.
+3. Select using silhouette or BIC **and** whether you can describe each segment from the table of median spend per cluster.
+4. Only at the end: compute ARI and AMI against the held-out `Channel` column; log your run to MLflow with your team name.
+5. Be ready to describe your segments in one sentence each.
+
+???
+The goal is to experience how many decisions go into a clustering and how much the result depends on them. Teams will quickly see that raw spend gives clusters driven by a few very large customers, and that log-transforming changes everything. Note that the baseline on raw spend has the highest silhouette (about 0.51) while its clusters are useless (ARI with Channel near 0): the pitfall from two slides ago, live. When comparing teams, I ask two questions: can you name your segments, and what is your ARI with Channel? A two-cluster GMM on log-standardized data reaches an ARI of about 0.6 with Channel. Then discuss why matching Channel is not the goal: if marketing wanted the channel, they already have it; a useful segmentation may cut across it.
+
+---
+.center[
+![:scale 55%](images/cluster-comparison.png)
+]
+
+???
+A summary picture: six algorithms on six small datasets, all standardized. Single linkage, DBSCAN and HDBSCAN recover rings and moons; k-means, Ward and GMM handle the blob-shaped data, and GMM handles the elongated clusters. The last row is uniform noise: k-means and GMM still return three clusters, while DBSCAN returns one and HDBSCAN marks a lot as noise. Remember that this is 2D; in high dimensions distances behave differently, and real data rarely looks like rings and moons.
+
+---
+class: some-space
+# Summary
+
+- **k-means**: classic, fast, convex clusters around centers; needs k
+--
+
+- **Agglomerative**: hierarchy and dendrogram, can use connectivity; Ward is a good default
+--
+
+- **DBSCAN / HDBSCAN**: arbitrary shapes, noise label; HDBSCAN handles varying density and needs no eps
+--
+
+- **Gaussian mixtures**: covariance, soft assignments, density model; choose K with BIC
+--
+
+- **Evaluation**: silhouette / BIC are biased guides; ARI / AMI need a reference; stability and usefulness decide
+
+???
+k-means is the fast default for partitioning and features. Agglomerative clustering gives a hierarchy, useful on small data. HDBSCAN is my first choice for exploration when I do not know the number of clusters and expect noise. Gaussian mixtures when I want a density model or soft assignments. And for all of them, internal scores are guides with built-in biases; the real test is stability and usefulness for the task.
+
+---
+class: middle
+# Next week and questions
+
+- Lab: finish both "Try it" sections in `lab.ipynb`
+- Week 11: time series forecasting
+- Unsupervised ideas return in Week 12: anomaly detection and drift monitoring
+
+# Questions?
+
+???
+Please finish both lab exercises before next week. Next week we move to time series forecasting, where the main change is that the order of samples matters and our cross-validation must respect it. PCA reconstruction error, GMM densities and density-based noise labels come back in Week 12 when we talk about anomaly detection and monitoring deployed models.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (26 slides); they are not needed for the homework or the project.
+
+---
+class: center
+# Whitening
+![:scale 100%](images/whitening.png)
+???
+Whitening means rotating with PCA and then dividing each component by its standard deviation, so every retained direction has unit variance. It is the same as PCA followed by a StandardScaler. Whether to whiten depends on whether you believe the components are equally important for the next model; for distance-based models such as kNN on faces it often helps. Use `PCA(whiten=True)`.
+
+---
+class:center
+# Data where PCA failed
+![:scale 90%](images/pca-fail.png)
+???
+Back to the synthetic dataset where all class information was in the smallest principal component. On the left, PCA only shows the separation in the third component. On the right, LDA's single discriminant separates the classes perfectly. For visualizing a labeled dataset, LDA is nearly as simple as PCA and takes the labels into account; just remember that a supervised projection fitted on the same data will look optimistic, so evaluate on held-out data if you draw conclusions.
+
+---
+class: center, compact
+# Showing algorithm progress
+
+![:scale 45%](images/digits_tsne_animation.gif)
+
+.smallest[https://github.com/oreillymedia/t-SNE-tutorial]
+???
+This animation shows the gradient descent at work: points start in a small cloud and are pulled together with their neighbors and pushed away from everything else. Early iterations use "early exaggeration", which inflates the attractive forces so clusters form quickly. It is a good reminder that the output is the result of an optimization that can be stopped early or land in a different local optimum with another seed.
+
+---
+class:spacious
+![:scale 25%](images/tsne-moons.png) ![:scale 45%](images/tsne-perplexity.png)
+???
+The same experiment on the two-moons data, which is already two-dimensional. Very low perplexity fragments each moon; medium values recover two elongated groups; higher values start to lose the shapes. Even in 2D the embedding does not reproduce the original geometry, which tells you how cautious to be in 64 or 20,000 dimensions.
+
+---
+![:scale 80%](images/dbscan_animation.gif)
+
+.smaller[by David Sheehan <a href="https://dashee87.github.io/data%20science/general/Clustering-with-Scikit-with-GIFs/">dashee87.github.io</a>]
+???
+This animation shows DBSCAN expanding clusters from core points, with two parameter settings: eps 1 and min_samples 8 on the left, eps 0.6 and min_samples 6 on the right. Clusters grow outward from seeds, and whatever is never reached stays noise. With the smaller radius some sparse regions become their own small clusters or noise. There is no parameter for the number of clusters; it follows from eps and min_samples.
+---
+class:split-40
+# PCA objective(s)
+.left-column[
+Maximum variance:
+`$$\large\max\limits_{u_1 \in R^p, \| u_1 \| = 1} \text{var}(Xu_1)$$`
+`$$\large\max\limits_{u_1 \in R^p, \| u_1 \| = 1} u_1^T \text{cov} (X) u_1$$`
+]
+.smaller.right-column[
+.center[
+![:scale 90%](images/pca-intuition.png)
+]
+]
+???
+The first formulation: find the unit vector u1 so that projecting the data onto it has maximum variance, which is the same as maximizing u1 transpose times the covariance matrix times u1. The solution is the top eigenvector of the covariance matrix. For the next component you remove the projection onto u1 and repeat. Point out that u1 and minus u1 give the same objective value, so the sign of a principal component is meaningless; students often try to interpret it.
+---
+class: fit3
+# PCA objective(s)
+Minimum reconstruction error with a rank constraint:
+
+`$$\large\min_{X', \text{rank}(X') = r}\|X-X'\|_F^2$$`
+.center[
+![:scale 45%](images/pca-intuition.png)
+]
+???
+The second formulation: among all matrices of rank r, find the one closest to X in squared (Frobenius) norm. The solution is exactly "rotate with PCA, keep r components, rotate back" (the Eckart–Young theorem). So maximizing retained variance and minimizing reconstruction error are the same problem for a fixed number of components. The reconstruction view also gives a simple outlier score (large reconstruction error), which we use for drift monitoring in Week 12.
+---
+class: fit
+# PCA Computation
+- Center X (subtract mean).
+- In practice: often also scale to unit variance.
+- Compute singular value decomposition:
+![:scale 100%](images/pca-computation.png)
+???
+Every implementation centers the data first; scaling is your decision, and we will see why it matters in a few slides. Then PCA is just the SVD of the centered data matrix, X = U D V transpose. The rows of V transpose are the principal directions, and the squared singular values divided by n minus 1 are the variances along them. For large matrices scikit-learn switches to randomized SVD automatically, which is why PCA scales to millions of rows.
+---
+class:split-40
+# Interpreting coefficients
+.tiny-code[```python
+pca = pca_lr.named_steps['pca']
+lr = pca_lr.named_steps['logisticregression']
+coef_pca = lr.coef_ @ pca.components_   # rotate back into the (scaled) input space
+```]
+.center[Comparing PCA + logreg vs plain logreg:]
+<br />
+.left-column[
+![:scale 90%](images/PCA+logreg.png)
+]
+.right-column[
+![:scale 90%](images/logreg+noPCA.png)
+]
+???
+Because both PCA and logistic regression are linear, the composed model is still linear in the scaled inputs, and multiplying the coefficients by the component matrix gives one coefficient per original feature. The left plot shows these back-rotated coefficients next to those of a plain, L2-regularized logistic regression; the right plot plots one against the other. They are related but not identical, because the PCA model can only use a six-dimensional subspace. For non-linear downstream models this simple back-rotation does not exist.
+---
+class: middle
+# Discriminant Analysis
+???
+Next is linear discriminant analysis. It is a classifier, but it also gives a supervised linear projection, which makes it the natural counterpart to PCA. A naming warning: the acronym LDA is also used for latent Dirichlet allocation, an unrelated topic model.
+---
+class: spacious, fit2
+# Linear Discriminant Analysis aka Fisher Discriminant
+
+`$$    P(y=k | X) = \frac{P(X | y=k) P(y=k)}{P(X)} = \frac{P(X | y=k) P(y = k)}{ \sum_{l} P(X | y=l) \cdot P(y=l)}$$`
+--
+
+`$$ p(X | y=k) = \frac{1}{(2\pi)^{p/2} |\Sigma|^{1/2}}\exp\left(-\frac{1}{2} (X-\mu_k)^T \Sigma^{-1} (X-\mu_k)\right) $$`
+--
+
+`$$    \log\left(\frac{P(y=k|X)}{P(y=l | X)}\right) = 0 \Leftrightarrow (\mu_k-\mu_l)^T\Sigma^{-1} X = \frac{1}{2} (\mu_k^T \Sigma^{-1} \mu_k - \mu_l^T \Sigma^{-1} \mu_l) + \log\frac{P(y=l)}{P(y=k)} $$`
+
+???
+LDA is a generative classifier: model p(x given y) for each class and apply Bayes' rule. The specific model is a Gaussian per class with a shared covariance matrix, so fitting only requires class means and one pooled covariance. Setting the log-odds of two classes to zero gives a boundary that is linear in x, so LDA is a linear classifier like logistic regression, but fit by a different principle. Equivalently: whiten the space with the shared covariance, then assign each point to the nearest class mean, adjusted by the class priors.
+---
+# LDA in practice
+
+.smaller[
+- Generative model: each class is Gaussian, all classes share one covariance matrix.
+- Fit = class means + pooled covariance; no hyperparameters to tune (except optional shrinkage).
+- Decision boundary is linear: nearest centroid after transforming the space by `$\Sigma^{-1/2}$`.
+]
+
+???
+In practice LDA is a very simple generative classifier: estimate one mean per class and one shared covariance, and the decision boundary is linear. There is nothing to tune except optional shrinkage of the covariance, which helps when there are many features compared to samples. Keep the last point in mind: LDA is nearest-centroid classification after whitening the space with the shared covariance, which is also why it works as a supervised dimensionality reduction.
+---
+class: spacious, fit2
+# Quadratic Discriminant Analysis
+LDA: `$$ p(X | y=k) = \frac{1}{(2\pi)^{p/2} |\Sigma|^{1/2}}\exp\left(-\frac{1}{2} (X-\mu_k)^T \Sigma^{-1} (X-\mu_k)\right) $$`
+
+QDA: `$$ p(X | y=k) = \frac{1}{(2\pi)^{p/2} |\Sigma_k|^{1/2}}\exp\left(-\frac{1}{2} (X-\mu_k)^T \Sigma_k^{-1} (X-\mu_k)\right) $$`
+
+.smaller[
+- Separate covariance per class: quadratic decision boundary.
+- More flexible, but `$\sim K p^2/2$` covariance parameters: needs more data per class.
+- Cannot be read as a single transformation of the space.
+]
+???
+QDA drops the shared-covariance assumption and estimates one covariance matrix per class. The boundary becomes quadratic, which is more flexible, but the number of parameters grows with the number of classes times features squared, so each covariance is estimated from fewer points. This is our first encounter with the flexibility versus stability trade-off in covariance modeling; it reappears with Gaussian mixture models in Part 2.
+---
+class:center
+![:scale 45%](images/linear-vs-quadratic-discriminant-analysis.png)
+???
+Top row: both classes share a covariance, which is exactly the LDA assumption, and both methods find nearly the same boundary. Bottom row: the covariances differ, and QDA's curved boundary fits better. As a pure linear classifier I would usually prefer logistic regression, which makes fewer assumptions. The reason LDA belongs in this lecture is the shared covariance, which lets us transform the space.
+---
+# Discriminants and PCA
+- Both fit Gaussian models
+- PCA: one Gaussian for the whole data
+- LDA: one Gaussian per class, shared covariance
+- LDA can transform the space: `LinearDiscriminantAnalysis(n_components=...).fit_transform(X, y)`
+- At most `n_classes - 1` components (the class means span that subspace)
+???
+PCA fits one Gaussian to all the data; LDA fits one per class with shared covariance. After whitening with the shared covariance, the class means span a subspace of dimension at most number of classes minus one, and projecting onto it gives the discriminant directions. So LDA is a supervised dimensionality reduction method with a hard limit on the number of components. Ask: how many components can LDA give on a binary problem? One.
+---
+# Algorithms
+- `KernelPCA`: PCA on a kernel matrix
+- `SpectralEmbedding` (Laplacian eigenmaps): eigenvectors of the graph Laplacian
+- `LocallyLinearEmbedding`, `Isomap` ("PCA on geodesic distances")
+- `TSNE`: t-distributed stochastic neighbor embedding (scikit-learn; openTSNE for large data)
+- UMAP: uniform manifold approximation and projection (`umap-learn`, scikit-learn API)
+???
+The first group are spectral methods from the early 2000s: they build a neighborhood graph or kernel and compute eigenvectors. They are elegant but in practice sensitive to noise and less informative on real data. t-SNE (2008) and UMAP (2018) are the two methods you will see in almost every applied paper that shows an embedding, for example in single-cell biology. Both are available with a scikit-learn style API, so you can swap them in the same code.
+---
+class: fit3
+# t-SNE
+
+`$$p_{j\mid i} = \frac{\exp(-\lVert\mathbf{x}_i - \mathbf{x}_j\rVert^2 / 2\sigma_i^2)}{\sum_{k \neq i} \exp(-\lVert\mathbf{x}_i - \mathbf{x}_k\rVert^2 / 2\sigma_i^2)}$$`
+--
+
+`$$p_{ij} = \frac{p_{j\mid i} + p_{i\mid j}}{2N}$$`
+
+--
+
+`$$q_{ij} = \frac{(1 + \lVert \mathbf{y}_i - \mathbf{y}_j\rVert^2)^{-1}}{\sum_{k \neq l} (1 + \lVert \mathbf{y}_k - \mathbf{y}_l\rVert^2)^{-1}}$$`
+
+--
+
+`$$KL(P||Q) = \sum_{i \neq j} p_{ij} \log \frac{p_{ij}}{q_{ij}}$$`
+
+???
+In the input space, t-SNE defines for each point a probability distribution over its neighbors with a Gaussian kernel, whose width sigma_i is set per point so that the distribution has a fixed perplexity, roughly the effective number of neighbors. These are symmetrized into p_ij. In the embedding, similarities q_ij use a Student-t kernel with heavy tails, which lets moderately distant points be placed far apart and avoids crowding everything in the middle. The positions y_i are optimized by gradient descent to minimize the KL divergence between P and Q; there is no function from x to y. Because KL heavily penalizes placing true neighbors far apart but barely penalizes the reverse, t-SNE preserves local neighborhoods and not global geometry.
+---
+.center[
+![:scale 60%](images/cluster_intro_1.png)
+]
+
+???
+We start with a set of points and the assumption that they fall into groups. The task is to discover those groups without any labels.
+---
+.center[
+![:scale 60%](images/cluster_intro_2.png)
+]
+
+???
+Here the answer is visually obvious: three groups. Real data is rarely this clean, and in more than two dimensions we cannot look at it directly.
+---
+class: spacious
+
+# Computational Properties
+
+- Naive implementation (Lloyd's):
+  - n_clusters * n_samples distance computations per iteration
+--
+
+- Fast "exact" algorithms:
+  - Elkan's (triangle inequality), Yinyang, ...
+--
+
+- Approximate algorithms:
+  - `MiniBatchKMeans`
+
+???
+Each Lloyd iteration costs n_clusters times n_samples distance computations. Elkan's algorithm uses the triangle inequality to skip distances that cannot change an assignment; it is exact in the sense of reproducing Lloyd's result, not of finding the global optimum. `MiniBatchKMeans` updates the centers from small random batches and is much faster on large data at a small cost in objective value. Since all of these are local searches anyway, the approximate variant is often the pragmatic choice.
+---
+# Feature Extraction using K-Means
+
+- Cluster membership → categorical feature
+- Distances to centers → continuous features (`km.transform(X)`)
+- Examples:
+  - Partitioning a low-dimensional space (similar to basis functions)
+  - Historically: image patch features ("bag of visual words", Coates & Ng 2011)
+  - Vector quantization, and product quantization for fast approximate nearest-neighbor search
+
+???
+One of the most useful applications of k-means is creating non-linear features: the distances to many centers form an RBF-like basis, which can help simple models. Around 2011, k-means on image patches combined with a linear classifier was competitive on image benchmarks; deep networks have long since replaced that approach. Today the same idea lives on in vector quantization, for example in product quantization, which compresses vectors for large-scale nearest-neighbor search. When clustering is used for features, put it inside the pipeline so it is refit on each training fold.
+---
+# Linkage Criteria
+
+.center[
+![:scale 90%](images/merging_criteria.png)
+]
+
+.narrow-left-column[
+.smaller[
+Cluster sizes:
+```
+single   : [96  1  1  1  1]
+average  : [82  9  7  1  1]
+complete : [50 24 14 11  1]
+ward     : [31 30 20 10  9]
+```
+]]
+
+.wide-right-column[
+.smallest[
+- Single linkage: smallest minimum distance
+- Average linkage: smallest average distance between all pairs
+- Complete linkage: smallest maximum distance
+- Ward (default in scikit-learn): smallest increase in within-cluster variance, leads to more equally sized clusters
+]]
+???
+The linkage criterion defines the distance between clusters. Single linkage uses the closest pair, which is equivalent to cutting the longest edges of a minimum spanning tree; it can follow chains and find arbitrary shapes, but it also isolates single far-away points, as the sizes show. Average and complete linkage are in between. Ward merges the pair that increases the within-cluster variance least, which is the k-means objective, and gives balanced clusters. Ward is the default and a good starting point.
+---
+class: spacious
+# Pros and Cons
+
+- Can restrict merges to a connectivity graph (e.g. k-NN graph, image grid)
+--
+
+- Fast with sparse connectivity, otherwise at least quadratic in n_samples
+--
+
+- Some linkage criteria lead to very imbalanced cluster sizes
+--
+
+- Hierarchy gives a more complete view than a single clustering
+???
+You can pass a connectivity graph so that only neighboring clusters may merge, for example neighboring pixels in an image or neighboring regions in brain imaging, which both encodes prior structure and makes the algorithm fast. Without it, the algorithm needs all pairwise distances, so memory and time grow at least quadratically. There is no `predict` for new points: agglomerative clustering only labels the data it was fit on.
+---
+class: fit3
+`$$ p(\mathbf{x}) = \sum_{k=1}^K \pi_k \mathcal{N}(\mathbf{x}; \mu_k, \Sigma_k) $$`
+
+.center[
+![:scale 40%](images/gmm1.png)
+]
+
+.center[
+![:scale 40%](images/gmm2.png)
+]
+
+???
+A one-dimensional illustration: three Gaussian components on top, with weights 0.5, 0.3 and 0.2. The bottom curve is their weighted sum, which is the mixture density. Notice that the mixture can have shapes, such as a skewed shoulder, that no single Gaussian could produce; with enough components a mixture can approximate essentially any smooth density.
+---
+# Probability Estimates
+
+.left-column[
+.smaller[
+```python
+gmm.predict_proba(X)
+```
+```
+array([[0., 0., 1.],
+       [1., 0., 0.],
+       ...])
+```
+.center[
+![:scale 55%](images/prob_est1.png)
+]
+]
+]
+
+.right-column[
+.smaller[
+```python
+# average log-likelihood per sample
+print(gmm.score(X))
+print(gmm.score_samples(X).shape)
+```
+```
+-5.509
+(500,)
+```
+
+.center[
+![:scale 55%](images/prob_est2.png)
+]
+]
+]
+
+???
+Two kinds of probabilities. `predict_proba` returns the responsibilities: for each point, the posterior probability of each component, one column per component; the contours on the left are levels of these posteriors. `score_samples` returns the log density of each point under the mixture, and `score` is its average; the contours on the right are levels of the density itself. Low `score_samples` values flag points that the model finds unlikely.
+---
+# Covariance restrictions
+
+![:scale 100%](images/covariance_types.png)
+???
+The full covariance has about n_features squared over two parameters per component, which becomes unstable in high dimensions or with few samples. scikit-learn offers four options: spherical, one variance per component; diagonal, axis-aligned ellipses; tied, one full covariance shared by all components, the unsupervised analogue of LDA; and full, the default. Choosing the covariance type is a way to control overfitting of the density model, and you can select it together with the number of components by BIC.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

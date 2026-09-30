@@ -1,0 +1,19 @@
+{
+  "student_id": null,
+  "leak_column": null,
+  "positive_rate_last_20pct": null,
+  "forward_auc_last_20pct": null,
+  "models_compared": null,
+  "configs_per_model": null,
+  "chosen_model": null,
+  "test_auc": null,
+  "baseline_test_auc": null,
+  "chosen_minus_baseline_auc_ci": null,
+  "expected_auc_new_clients": null,
+  "memo": {
+    "decision": null,
+    "expected_lift_top10": null,
+    "main_risk": null,
+    "justification": ""
+  }
+}

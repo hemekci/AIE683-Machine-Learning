@@ -1,0 +1,18 @@
+{
+  "student_id": null,
+  "leak_columns": null,
+  "colleague_cv_r2": null,
+  "failing_cause": null,
+  "failing_column": null,
+  "chosen_model": null,
+  "feature_set": null,
+  "honest_cv_rmse": null,
+  "baseline_cv_rmse": null,
+  "expected_rmse_log": null,
+  "memo": {
+    "decision": null,
+    "expected_error_factor": null,
+    "main_risk": null,
+    "justification": ""
+  }
+}

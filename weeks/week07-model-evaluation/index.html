@@ -1,0 +1,1989 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 7: Model Evaluation, Calibration & Imbalanced Data</title>
+
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 7: Model Evaluation, Calibration & Imbalanced Data
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is about the last step of every project we have built so far: deciding whether a model is good, and turning its scores into decisions. We have fitted linear models, tree ensembles and MLPs; today we ask what "good" means for each of them. Part 1 covers metrics and decision thresholds, Part 2 covers calibration and imbalanced data. The lab notebook for this week is `lab.ipynb` in the week folder.
+
+---
+class: center, middle
+
+# Screening for 1 in 40
+
+.smaller[
+A screening program sees thousands of mammograms. About **2%** contain a finding
+(micro-calcifications) that needs a closer look.
+]
+
+.smaller[
+- A model that says "normal" for every image is **97.7% accurate**
+- Missing a finding costs far more than an extra radiologist review
+- The radiologist wants a **probability**, not just a yes/no
+]
+
+???
+This is the running example for today, and it is a real dataset: the OpenML mammography data. Ask the class: would you deploy the 97.7% accurate model? Everyone says no, which means accuracy is not what we care about. Three questions follow from this slide and structure the whole session: which metric reflects the task, where do we put the threshold given unequal costs, and can we trust the predicted probabilities.
+
+---
+class: spacious, fit2
+# Plan for today
+
+- Part 1 (≈ 80 min): metrics for binary and multi-class problems; decision thresholds
+  - Try it 1: predict which model wins
+  - Try it 2: set the threshold for the clinic
+- Break
+- Part 2 (≈ 80 min): calibration; imbalanced data (threshold first, class weights, resampling as an experiment)
+  - Try it 3: spot the leak
+- Wrap-up and lab (`lab.ipynb`)
+
+???
+The three "Try it" activities are short, 10 to 15 minutes, and each has a matching section in the lab notebook. Please have the notebook open and run the first cells now, since the datasets download on first use. If you fall behind during an activity, the next worked example does not depend on your answer.
+
+---
+class: center, middle
+# Metrics for Binary Classification
+???
+We start with the two-class case, because almost everything else is built from it. Multi-class metrics are mostly averages of binary ones, and even regression metrics follow the same logic of "choose the loss that matches the decision".
+
+---
+# Review: confusion matrix
+.center[
+![:scale 55%](images/confusion_matrix.png)
+]
+.larger[
+$$\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}$$
+]
+???
+Accuracy is the diagonal divided by everything. Every metric today is some function of these four numbers, or of how they change as we move a threshold. Make sure everyone agrees on the layout: rows are the true class, columns are the prediction, which is scikit-learn's convention.
+
+---
+class: center, middle
+# Positive & Negative are arbitrary
+## Though often the minority class is considered positive
+???
+Which class we call "positive" is a convention, but precision, recall and F1 all change if we swap it. In practice we usually call the rare, interesting class positive: the finding, the fraud, the failure. When you read a paper that reports precision and recall, always check which class was positive.
+
+---
+class: fit2
+#
+.smaller[
+```python
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+data = load_breast_cancer()
+
+X_train, X_test, y_train, y_test = train_test_split(
+    data.data, data.target, stratify=data.target, random_state=0)
+
+lr = make_pipeline(StandardScaler(), LogisticRegression()).fit(X_train, y_train)
+y_pred = lr.predict(X_test)
+
+print(confusion_matrix(y_test, y_pred))
+print(lr.score(X_test, y_test))
+ConfusionMatrixDisplay.from_estimator(lr, X_test, y_test, cmap='gray_r')
+```
+```
+[[50  3]
+ [ 3 87]]
+0.958
+```
+
+]
+
+![:scale 20%](images/plot_confusion_matrix.png)
+???
+Metric functions such as `confusion_matrix` and `accuracy_score` take `y_true` and `y_pred`. The plotting classes have two constructors: `from_estimator` takes the fitted model and the data, `from_predictions` takes labels or scores you already computed. The second is handy when predictions come from somewhere else, for example a model served in production.
+
+---
+# Problems with Accuracy
+Data with 90% negatives:
+.smaller[
+```python
+from sklearn.metrics import accuracy_score
+for y_pred in [y_pred_1, y_pred_2, y_pred_3]:
+    print(accuracy_score(y_true, y_pred))
+```
+```
+0.9
+0.9
+0.9
+```
+]
+
+--
+
+.center[
+![:scale 70%](images/problems_with_accuracy.png)
+]
+???
+Three completely different classifiers get the same accuracy. The first never predicts the positive class, the second finds all positives but raises ten false alarms, the third misses half of them. Ask which one you would deploy in the screening setting; the answer depends on the costs, which accuracy ignores.
+
+---
+class: split-40, fit2
+# Precision, Recall, f-score
+.left-column[
+`$$ \large\text{Precision} = \frac{\text{TP}}{\text{TP}+\text{FP}}$$`<br />
+`$$\large\text{Recall} = \frac{\text{TP}}{\text{TP}+\text{FN}}$$`<br />
+`$$\large\text{F} = 2 \frac{\text{precision} \cdot\text{recall}}{\text{precision}+\text{recall}}$$`]
+.right-column[
+<br />
+Positive Predictive Value (PPV)
+<br />
+<br />
+<br />
+<br />
+Sensitivity, coverage, true positive rate.
+<br />
+<br />
+<br />
+<br />
+Harmonic mean of precision and recall
+]
+???
+Precision asks "of the alarms, how many were real"; recall asks "of the real cases, how many did we catch". All three depend on which class is positive. F1 weights precision and recall equally, which is a choice; the F-beta score lets you weight recall beta times as much, and that is often a better match to asymmetric costs.
+
+---
+class: compact, fit
+# Normalizing the confusion matrix
+.smallest[
+```python
+confusion_matrix(y_true, y_pred)
+```
+![:scale 30%](images/confusion_matrix.png)
+]
+.left-column[
+.smallest[
+```python
+confusion_matrix(y_true, y_pred,
+                 normalize='true')
+```
+![:scale 80%](images/confusion_matrix_norm_true.png)
+]
+]
+.right-column[
+.smallest[
+```python
+confusion_matrix(y_true, y_pred,
+                 normalize='pred')
+```
+![:scale 80%](images/confusion_matrix_norm_pred.png)
+]
+]
+???
+Normalizing by the true class (rows) gives rates such as recall and the false positive rate; these do not depend on class prevalence. Normalizing by the prediction (columns) gives precision and the negative predictive value; these do depend on prevalence. That distinction matters later when we compare ROC curves, built from row-normalized rates, with precision-recall curves.
+
+---
+class: compact, fit
+.smallest[
+```python
+classification_report(y_true, y_pred)
+```
+]
+.left-column[
+![:scale 38%](images/confusion_matrix_col.png)]
+.smallest[
+.right-column[
+```
+              precision    recall  f1-score   support
+
+           0       0.90      1.00      0.95        90
+           1       0.00      0.00      0.00        10
+
+    accuracy                           0.90       100
+   macro avg       0.45      0.50      0.47       100
+weighted avg       0.81      0.90      0.85       100
+
+
+              precision    recall  f1-score   support
+
+           0       1.00      0.89      0.94        90
+           1       0.50      1.00      0.67        10
+
+    accuracy                           0.90       100
+   macro avg       0.75      0.94      0.80       100
+weighted avg       0.95      0.90      0.91       100
+
+
+              precision    recall  f1-score   support
+
+           0       0.94      0.94      0.94        90
+           1       0.50      0.50      0.50        10
+
+    accuracy                           0.90       100
+   macro avg       0.72      0.72      0.72       100
+weighted avg       0.90      0.90      0.90       100
+```
+]]
+???
+The classification report shows precision, recall and F1 for each class treated as positive, plus two averages. Look at the first classifier: the minority class has precision and recall of zero, which the 0.90 accuracy completely hides. Pass `zero_division=0` if you want to silence the warning for classes that are never predicted.
+
+---
+class: fit2
+# Averaging strategies
+
+`$$\text{macro }\frac{1}{\left|L\right|} \sum_{l \in L} R(y_l, \hat{y}_l)$$`
+
+`$$\text{weighted } \frac{1}{n} \sum_{l \in L} n_l R(y_l, \hat{y}_l)$$`
+
+
+.smaller[
+```python
+print("Weighted average: ", recall_score(y_true, y_pred_1, average="weighted"))
+print("Macro average: ", recall_score(y_true, y_pred_1, average="macro"))
+```
+```
+Weighted average: 0.90
+Macro average: 0.50
+```
+]
+<br />
+???
+Each class in turn is treated as positive (one-vs-rest), a binary metric is computed, and the results are averaged. Macro averaging gives every class the same weight; weighted averaging gives every sample the same weight, so large classes dominate. For the always-negative classifier, weighted recall is 0.9, the same as accuracy, while macro recall is 0.5. If you care about the small classes, use macro; "micro" and "samples" matter mainly for multi-label problems, which we skip.
+
+---
+class: spacious
+# Balanced Accuracy
+.smaller[
+```python
+balanced_accuracy_score(y_t, y_p) == recall_score(y_t, y_p, average='macro')
+```
+]
+
+$$\text{balanced accuracy} = \frac{1}{2}\left( \frac{TP}{TP + FN} + \frac{TN}{TN + FP}\right )$$
+
+- Always 0.5 for chance predictions
+- Equal to accuracy for balanced datasets
+- Related single-number alternative: Matthews correlation coefficient (`matthews_corrcoef`)
+???
+Balanced accuracy is macro-averaged recall: the mean of sensitivity and specificity. Its main advantage is interpretability, since chance level is always 0.5 regardless of imbalance. The Matthews correlation coefficient is another single number that uses all four cells of the confusion matrix and is popular in bioinformatics; it is available as a scorer too.
+
+---
+class: fit2
+# Mammography Data
+
+.smallest[
+.left-column[
+```python
+from sklearn.datasets import fetch_openml
+# mammography https://www.openml.org/d/310
+data = fetch_openml('mammography', version=1, as_frame=True)
+X, y = data.data, data.target
+X.shape
+```
+(11183, 6)
+```python
+y.value_counts()
+```
+```
+-1    10923
+1       260
+```
+]
+.right-column[
+.center[
+![:scale 100%](images/mammography_data.png)
+]
+]
+.reset-column[
+```python
+# make y boolean
+# this allows sklearn to determine the positive class more easily
+X_train, X_test, y_train, y_test = train_test_split(X, y == '1', random_state=0)
+```
+]
+]
+???
+Back to the screening case. The data has 11,183 regions of interest described by six image features, and only 260 are positive, about 2.3%. In the scatter matrix the minority class is plotted last in orange, otherwise it would be hidden under the blue points. Converting the target to boolean tells scikit-learn unambiguously that `True` is the positive class.
+
+---
+.smallest[
+.left-column[
+```python
+svc = make_pipeline(StandardScaler(),
+                    SVC(C=100, gamma=0.1))
+svc.fit(X_train, y_train)
+svc.score(X_test, y_test)
+```
+```
+0.986
+```
+]
+.right-column[
+```python
+rf = RandomForestClassifier(random_state=0)
+
+rf.fit(X_train, y_train)
+rf.score(X_test, y_test)
+```
+```
+0.988
+```
+]
+]
+
+--
+
+.reset-column[
+]
+.smallest[
+.left-column[
+```
+              precision   recall  f1-score  support
+
+       False       0.99     1.00      0.99     2732
+        True       0.81     0.53      0.64       64
+
+    accuracy                          0.99     2796
+   macro avg       0.90     0.76      0.82     2796
+weighted avg       0.98     0.99      0.99     2796
+```
+]
+.right-column[
+```
+              precision   recall  f1-score  support
+
+       False       0.99     1.00      0.99     2732
+        True       0.89     0.53      0.67       64
+
+    accuracy                          0.99     2796
+   macro avg       0.94     0.76      0.83     2796
+weighted avg       0.99     0.99      0.99     2796
+```
+
+]
+]
+???
+Both models look excellent by accuracy, 98.6% and 98.8%, barely above the 97.7% of the trivial model. The classification reports tell a different story: both find only about half of the positives. Ask the class whether they would prefer the higher precision of the forest or not; that depends on what a missed finding costs.
+
+---
+class:spacious
+# Goal setting!
+- What do I want? What do I care about?
+- Can I assign costs to the confusion matrix?
+- What guarantees do we want to give?
+
+???
+Before choosing a metric, talk to whoever will use the model. Can you put a cost on each cell of the confusion matrix, for example a false positive costs one extra review and a false negative costs a late diagnosis? Or is there a constraint, such as "recall must be at least 90%", and we maximize precision subject to it? Writing this down early saves a lot of wasted model selection.
+
+---
+# Changing Thresholds
+.tiny-code[
+```python
+y_pred = rf.predict(X_test)
+print(classification_report(y_test, y_pred))
+```
+```
+              precision    recall  f1-score   support
+
+       False       0.99      1.00      0.99      2732
+        True       0.89      0.53      0.67        64
+
+    accuracy                           0.99      2796
+   macro avg       0.94      0.76      0.83      2796
+weighted avg       0.99      0.99      0.99      2796
+```
+```python
+y_pred = rf.predict_proba(X_test)[:, 1] > .30
+print(classification_report(y_test, y_pred))
+```
+```
+              precision    recall  f1-score   support
+
+       False       0.99      0.99      0.99      2732
+        True       0.75      0.66      0.70        64
+
+    accuracy                           0.99      2796
+   macro avg       0.87      0.83      0.85      2796
+weighted avg       0.99      0.99      0.99      2796
+```
+]
+
+???
+`predict` thresholds `predict_proba` at 0.5. Lowering the threshold to 0.3 trades precision (0.89 to 0.75) for recall (0.53 to 0.66). Nothing about the model changed, only the decision rule. Later in Part 1 we will see how to choose this threshold properly instead of by hand.
+
+---
+class: compact, fit2
+# Precision-Recall curve
+.smaller[
+```python
+from sklearn.metrics import PrecisionRecallDisplay
+svc = make_pipeline(StandardScaler(), SVC(C=100, gamma=0.1))
+svc.fit(X_train, y_train)
+PrecisionRecallDisplay.from_estimator(svc, X_test, y_test, name='SVC')
+```
+]
+.center[
+![:scale 65%](images/precision_recall_curve.png)
+]
+???
+The precision-recall curve shows every threshold at once: each point is the precision and recall you would get at one cut-off of the decision function. The circle marks the default threshold of zero. Ask where on this curve the screening program should operate; probably further right, at higher recall, accepting lower precision.
+
+---
+class: compact, fit2
+# ROC Curve
+.center[
+## (Receiver Operating Characteristic)
+]
+.smaller[
+```python
+from sklearn.metrics import RocCurveDisplay
+RocCurveDisplay.from_estimator(svc, X_test, y_test, name='SVC',
+                               plot_chance_level=True)
+```
+]
+.center[
+![:scale 55%](images/roc_curve_svc.png)
+]
+???
+The ROC curve plots the true positive rate (recall) against the false positive rate for all thresholds. The dotted diagonal is what random scores give. Both axes are normalized by the true class, so the ROC curve does not change if we change class prevalence, while precision does.
+
+---
+class: fit
+# Comparing RF and SVC
+.smallest[
+```python
+fig, ax = plt.subplots()
+pr_svc.plot(ax=ax, name='SVC')      # reuse the computed display
+PrecisionRecallDisplay.from_estimator(rf, X_test, y_test, ax=ax, name='RandomForest')
+```
+]
+.center[
+![:scale 60%](images/rf_vs_svc.png)
+]
+???
+`pr_svc` is the display returned by `PrecisionRecallDisplay.from_estimator`; every `*Display` object can re-plot into a given `ax` without recomputing, and `from_predictions` works from saved scores (details in the backup). The two curves cross: the forest is better at high precision, while in the middle region they are close. Which model is better depends on where you will operate. Comparing curves by eye does not scale to many models, so we want a single number that summarizes the curve, or a number evaluated at the operating point we care about.
+
+---
+# Average Precision
+.center[
+![:scale 100%](images/avg_precision.png)
+]
+???
+Average precision sums the precision at each threshold weighted by the increase in recall, which is a step-function approximation of the area under the precision-recall curve. It takes all thresholds into account and is sensitive to how well the top of the ranking is ordered. That makes it a good default for comparing models on imbalanced data. Its chance level equals the positive rate, here about 0.02, so it is less easy to interpret than ROC AUC.
+
+---
+class: fit
+# Area Under ROC Curve (aka AUC)
+.center[
+![:scale 55%](images/roc_curve_svc_auc.png)
+]
+- Always .5 for random/constant prediction
+- = probability that a random positive is ranked above a random negative
+
+???
+ROC AUC is 0.5 for random or constant scores, which makes it easy to interpret. It also has a clean probabilistic meaning: the chance that a randomly chosen positive gets a higher score than a randomly chosen negative. In papers "AUC" almost always means ROC AUC. Like average precision it is a ranking metric, so it is independent of the threshold.
+
+---
+class: fit
+# Keep in mind: ranking vs predictions
+```python
+dec = svc.decision_function(X_test)
+np.all((dec > 0) == svc.predict(X_test))
+```
+```
+True
+```
+```python
+print(f1_score(y_test, dec > 0))
+print(average_precision_score(y_test, dec))
+```
+```
+0.642
+0.635
+```
+
+--
+
+```python
+dec_new = dec - 10
+print(f1_score(y_test, dec_new > 0))
+print(average_precision_score(y_test, dec_new))
+```
+```
+0.0
+0.635
+```
+
+???
+Shifting the decision function by a constant leaves the ranking unchanged, so average precision is identical, but now nothing is predicted as positive and F1 drops to zero. A model can have perfect AUC and useless predictions. This is why you should report a ranking metric and a thresholded metric, or tune the threshold explicitly.
+
+---
+# Threshold and ranking metrics
+.left-column[
+.tiny[
+```python
+from sklearn.metrics import f1_score
+f1_rf = f1_score(y_test, rf.predict(X_test))
+print(f"f1_score of random forest: {f1_rf:.3f}")
+f1_svc = f1_score(y_test, svc.predict(X_test))
+print(f"f1_score of svc: {f1_svc:.3f}")
+```
+
+```
+f1_score of random forest: 0.667
+f1_score of svc: 0.642
+```
+```python
+from sklearn.metrics import balanced_accuracy_score
+ba_rf = balanced_accuracy_score(y_test, rf.predict(X_test))
+print(f"Balanced accuracy of random forest: {ba_rf:.3f}")
+ba_svc = balanced_accuracy_score(y_test, svc.predict(X_test))
+print(f"Balanced accuracy of svc: {ba_svc:.3f}")
+```
+```
+Balanced accuracy of random forest: 0.765
+Balanced accuracy of svc: 0.764
+```
+]
+]
+.right-column[
+.tiny[
+```python
+from sklearn.metrics import average_precision_score
+ap_rf = average_precision_score(
+    y_test, rf.predict_proba(X_test)[:, 1])
+print(f"Average precision of random forest: {ap_rf:.3f}")
+ap_svc = average_precision_score(
+    y_test, svc.decision_function(X_test))
+print(f"Average precision of svc: {ap_svc:.3f}")
+```
+```
+Average precision of random forest: 0.737
+Average precision of svc: 0.635
+```
+```python
+from sklearn.metrics import roc_auc_score
+auc_rf = roc_auc_score(y_test, rf.predict_proba(X_test)[:, 1])
+print(f"Area under ROC curve of random forest: {auc_rf:.3f}")
+auc_svc = roc_auc_score(y_test, svc.decision_function(X_test))
+print(f"Area under ROC curve of svc: {auc_svc:.3f}")
+```
+```
+Area under ROC curve of random forest: 0.936
+Area under ROC curve of svc: 0.817
+```
+]]
+???
+At the default thresholds the two models are nearly tied: balanced accuracy is 0.765 against 0.764. The ranking metrics separate them clearly, with the forest ahead on both average precision and ROC AUC. Ranking metrics tell you which model can be made better by choosing the threshold; thresholded metrics tell you how the model behaves as currently configured. Report both.
+
+---
+class: fit
+# Summary of metrics for binary classification
+
+Threshold-based:
+- (balanced) accuracy
+- precision, recall, F1 (or F-beta)
+- expected cost from a cost matrix
+
+Ranking:
+- average precision
+- ROC AUC
+
+Probabilistic (Part 2):
+- log loss, Brier score
+
+???
+Threshold-based metrics judge the decisions a model makes now; ranking metrics judge whether a good threshold exists; probabilistic metrics judge whether the scores can be read as probabilities. For imbalanced binary problems, a reasonable default for model selection is average precision or ROC AUC, followed by explicit threshold selection with a thresholded metric that matches the task. Never optimize precision alone or recall alone: a grid search on recall happily returns a model that predicts everything as positive.
+
+---
+class: center, middle
+
+# Try it 1: predict which model wins (10 min)
+
+.left[
+Lab section 2. Three models on the mammography data, 5-fold CV:<br/>
+`LogisticRegression`, `RandomForestClassifier`, `RandomForestClassifier(class_weight="balanced")`
+
+1. **Before running**: write down the winner on accuracy, balanced accuracy, average precision, ROC AUC
+2. Complete the TODO and run it
+3. Which metric changes the ranking most? Why?
+]
+
+???
+Give students two minutes to commit to predictions before they run anything; the point is to test intuition. Typical outcome: accuracy barely separates the models, balanced accuracy strongly favours the class-weighted forest, and the ranking metrics favour the plain forest by a small margin. The discussion question is why class weights change balanced accuracy so much but ROC AUC so little: weights mostly move the effective threshold rather than the ranking.
+
+---
+class: center, middle
+# Decision thresholds
+???
+We have seen that the threshold is where ranking turns into decisions. Hand-picking 0.3 on the test set, as I did earlier, is not a valid procedure: it uses test data to make a modelling decision. Scikit-learn now has meta-estimators that make the threshold part of the model and tune it with cross-validation.
+
+---
+# The threshold is part of the model
+
+.smaller[
+```python
+from sklearn.model_selection import FixedThresholdClassifier, TunedThresholdClassifierCV
+
+# set it by hand (e.g. a threshold agreed with domain experts)
+rf_03 = FixedThresholdClassifier(RandomForestClassifier(random_state=0), threshold=0.3)
+rf_03.fit(X_train, y_train)
+
+# or tune it with cross-validation on the training data
+tuned_f1 = TunedThresholdClassifierCV(RandomForestClassifier(random_state=0),
+                                      scoring="f1", cv=5)
+tuned_f1.fit(X_train, y_train)
+print(f"{tuned_f1.best_threshold_:.3f}")
+print(f1_score(y_test, rf.predict(X_test)), f1_score(y_test, tuned_f1.predict(X_test)))
+```
+```
+0.414
+0.667 0.704
+```
+]
+
+- Both are ordinary estimators: they work in pipelines, `cross_validate`, `GridSearchCV`
+- Available since scikit-learn 1.5
+
+???
+`FixedThresholdClassifier` wraps any classifier and applies a given cut-off in `predict`. `TunedThresholdClassifierCV` fits the model in each CV fold, scans the thresholds on the validation fold, and picks the one that maximizes the scorer; then it refits the model on all training data. Here tuning for F1 moves the threshold to about 0.41 and improves test F1 from 0.667 to 0.704. Because the result is a normal estimator, the whole procedure can be cross-validated or put inside a grid search.
+
+---
+class: fit2
+# Cost-sensitive threshold
+
+.smaller[
+```python
+COST_FP, COST_FN = 1, 20      # missed finding = 20 extra reviews
+
+def neg_cost(y_true, y_pred):
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[False, True]).ravel()
+    return -(COST_FP * fp + COST_FN * fn)
+
+tuned_cost = TunedThresholdClassifierCV(RandomForestClassifier(random_state=0),
+                                        scoring=make_scorer(neg_cost), cv=5,
+                                        store_cv_results=True).fit(X_train, y_train)
+```
+```
+cost-optimal threshold: 0.101
+test cost  default 0.5: 604   tuned for F1: 526   tuned for cost: 285
+```
+]
+.center[![:scale 45%](images/tuned_threshold_cost.png)]
+
+???
+If the costs of the four cells are known, optimize the cost directly. `make_scorer` turns a metric `(y_true, y_pred)` into a scorer `(estimator, X, y)`, which is what `TunedThresholdClassifierCV`, `cross_validate` and `GridSearchCV` expect. The scorer must be "greater is better", so it returns the negative cost. With a 20:1 cost ratio the best threshold drops to about 0.1 and the test cost falls from 604 to 285, less than half. Note that tuning for F1 is better than the default but still far from the cost optimum: F1 encodes an implicit trade-off that is not your trade-off. For a perfectly calibrated model the optimal threshold would be `COST_FP / (COST_FP + COST_FN)`, about 0.048; the gap is one motivation for calibration in Part 2.
+
+---
+class: spacious, fit
+# Thresholds: what goes wrong in practice
+
+- **Tuning on the test set**: the reported cost is optimistic. Tune inside CV (or on a validation split), report on the test set
+- **Prevalence shift**: a threshold tuned at 2% positives is wrong at 5%; precision-based thresholds are most affected
+- **Uncalibrated scores**: "0.3" means nothing by itself; the optimal cut-off depends on the model
+- **Multi-class**: no single threshold; use per-class costs on calibrated probabilities (decision theory), or reduce to one-vs-rest decisions
+
+???
+These are the mistakes I see most often in project reports. The prevalence point matters for deployment: if the screening population changes, the precision of a fixed threshold changes even though the ROC curve does not. We will come back to monitoring such shifts in Week 12. For multi-class problems there is no `TunedThresholdClassifierCV`; the principled route is to calibrate the probabilities and choose the class with the lowest expected cost.
+
+---
+class: center, middle
+
+# Try it 2: set the threshold for the clinic (15 min)
+
+.left[
+Lab section 4. Costs: missed finding **50**, false alarm **1**.
+
+1. Any classifier you like; choose its threshold **using only training data**
+2. Report `total_cost(y_test, y_pred, cost_fp=1, cost_fn=50)` on the test set
+3. Lowest test cost wins; tuning on the test set disqualifies
+]
+
+???
+This is a small competition; collect the test costs on the board. Most good solutions wrap a forest or gradient boosting model in `TunedThresholdClassifierCV` with a cost scorer, and end up with a threshold well below 0.1. Ask the winners what they did and ask everyone how the threshold moved compared with the 20:1 example. A useful follow-up question: how much of the gain came from the model and how much from the threshold?
+
+---
+class: split-40, fit
+# Confusion Matrix
+.left-column[
+.tiny-code[
+```python
+from sklearn.datasets import load_digits
+from sklearn.metrics import accuracy_score
+
+digits = load_digits()
+# data is between 0 and 16
+X_train, X_test, y_train, y_test = train_test_split(
+    digits.data / 16., digits.target, random_state=0)
+lr = LogisticRegression(max_iter=1000).fit(X_train, y_train)
+pred = lr.predict(X_test)
+print(f"Accuracy: {accuracy_score(y_test, pred):.3f}")
+ConfusionMatrixDisplay.from_estimator(lr, X_test, y_test,
+                                      cmap='gray_r')
+```
+```
+Accuracy: 0.960
+```
+![:scale 60%](images/confusion_matrix_digits.png)
+
+]
+]
+.right-column[
+.tiny-code[
+```python
+print(classification_report(y_test, pred))
+```
+```
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00        37
+           1       0.91      0.91      0.91        43
+           2       0.98      1.00      0.99        44
+           3       1.00      0.96      0.98        45
+           4       0.95      0.97      0.96        38
+           5       0.96      0.96      0.96        48
+           6       0.98      0.98      0.98        52
+           7       0.98      0.96      0.97        48
+           8       0.96      0.90      0.92        48
+           9       0.90      0.98      0.94        47
+
+    accuracy                           0.96       450
+   macro avg       0.96      0.96      0.96       450
+weighted avg       0.96      0.96      0.96       450
+```
+]
+]
+???
+Most of what we said carries over to more than two classes, with two complications: the confusion matrix grows quadratically, and there is no single threshold to tune. The multi-class confusion matrix shows exactly which classes are confused with which, here for example 8s predicted as 1s or 9s. It is the best diagnostic tool but not a model-selection criterion. The classification report gives per-class precision and recall; on this nearly balanced dataset macro and weighted averages coincide.
+
+---
+# Summary of metrics for multiclass classification
+
+Threshold-based:
+- accuracy
+- precision, recall, f1 (macro average, weighted)
+
+Ranking:
+- OVR ROC AUC
+- OVO ROC AUC
+
+Probabilistic:
+- log loss (cross-entropy)
+
+???
+Unlike the binary case, macro-averaged recall or precision alone is a reasonable model-selection criterion, because averaging over classes prevents the degenerate "predict everything as one class" solution. ROC AUC generalizes by averaging one-vs-rest or one-vs-one AUCs (scorer strings `roc_auc_ovr`, `roc_auc_ovo`; the formulas are in the backup). Multi-class ranking metrics are useful for comparing models but do not tell you how to make decisions, since you would need several thresholds. In practice I use macro F1 or macro recall for decisions and log loss when probabilities matter.
+
+---
+# Picking metrics
+
+- Accuracy rarely what you want
+- Problems are rarely balanced
+- Find the right criterion for the task
+- OR pick a substitute, but at least think about it
+- Emphasis on recall or precision?
+- Which classes are the important ones?
+
+???
+Summary of Part 1 so far: decide on the metric from the application, not from habit. Ask whether there is a cost matrix or a constraint, which class is positive, whether all classes or all samples should count equally, and whether you will use the default threshold. Write the metric into your project proposal before you start modelling; it keeps the evaluation honest.
+
+---
+# Using metrics in cross-validation
+.smaller[
+```python
+cancer = load_breast_cancer()
+X, y = cancer.data, cancer.target
+
+# default scoring for classification is accuracy
+rf = RandomForestClassifier(random_state=0)
+print("default scoring ", cross_val_score(rf, X, y))
+
+# providing scoring="accuracy" doesn't change the results
+explicit_accuracy =  cross_val_score(rf, X, y,  scoring="accuracy")
+print("explicit accuracy scoring ", explicit_accuracy)
+
+ap =  cross_val_score(rf, X, y, scoring="average_precision")
+print("average precision", ap)
+```
+```
+default scoring  [0.93  0.947 0.991 0.974 0.973]
+explicit accuracy scoring  [0.93  0.947 0.991 0.974 0.973]
+average precision [0.992 0.973 0.999 0.995 0.999]
+```
+]
+
+???
+Using a better metric in cross-validation is one argument: `scoring`. It accepts a string, a callable, a list or a dict. For ranking metrics such as average precision the scorer calls `predict_proba` or `decision_function` for you. The same argument exists in `GridSearchCV`, and it also changes what `grid.score` reports; we use this heavily next week in model selection.
+
+---
+# Multiple Metrics
+```python
+from sklearn.model_selection import cross_validate
+res = cross_validate(RandomForestClassifier(random_state=0), X, y,
+                     scoring=["accuracy", "average_precision", "recall_macro"],
+                     return_train_score=True, cv=5)
+pd.DataFrame(res)
+```
+.tiny[
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th><th>fit_time</th><th>score_time</th><th>test_accuracy</th><th>train_accuracy</th><th>test_average_precision</th><th>train_average_precision</th><th>test_recall_macro</th><th>train_recall_macro</th></tr>
+  </thead>
+  <tbody>
+    <tr><th>0</th><td>0.161</td><td>0.012</td><td>0.930</td><td>1.0</td><td>0.992</td><td>1.0</td><td>0.925</td><td>1.0</td></tr>
+    <tr><th>1</th><td>0.107</td><td>0.008</td><td>0.947</td><td>1.0</td><td>0.973</td><td>1.0</td><td>0.935</td><td>1.0</td></tr>
+    <tr><th>2</th><td>0.099</td><td>0.010</td><td>0.991</td><td>1.0</td><td>0.999</td><td>1.0</td><td>0.993</td><td>1.0</td></tr>
+    <tr><th>3</th><td>0.157</td><td>0.007</td><td>0.974</td><td>1.0</td><td>0.995</td><td>1.0</td><td>0.969</td><td>1.0</td></tr>
+    <tr><th>4</th><td>0.097</td><td>0.012</td><td>0.973</td><td>1.0</td><td>0.999</td><td>1.0</td><td>0.974</td><td>1.0</td></tr>
+  </tbody>
+</table>
+]
+???
+`cross_validate` fits each model once per fold and evaluates all requested metrics, so looking at several metrics costs nothing extra. With `return_train_score=True` you also see the training scores; a forest reaches 1.0 on the training folds, which is expected and not in itself a problem. This dictionary is also exactly what we log to MLflow as metrics. `get_scorer_names()` lists all built-in scorer strings; writing your own scorer function is covered in the backup.
+
+---
+class: center, middle
+
+# Break
+
+???
+Take ten minutes. After the break we look at whether predicted probabilities can be trusted, and at what to do about imbalance when building the model rather than when evaluating it.
+
+---
+class: center, middle
+
+# Part 2: Calibration, Imbalanced Data
+
+???
+In Part 1 we evaluated models. Now we change the models: first so that their probabilities can be trusted, then so that they cope better with rare classes. Both topics connect back to thresholds: a calibrated model makes threshold choice principled, and many imbalance "fixes" are threshold changes in disguise.
+
+---
+class:spacious
+# Calibration
+.center[
+[Niculescu-Mizil & Caruana, Predicting good probabilities with supervised learning, ICML 2005](https://www.cs.cornell.edu/~alexn/papers/calibration.icml05.crc.rev3.pdf)
+]
+- Probabilities can be much more informative than labels:
+
+- “The model predicted you don’t have cancer” vs “The model predicted you’re 40% likely to have cancer”
+
+???
+A classifier that outputs "no cancer" and one that outputs "40% chance" may make the same decision at a 0.5 threshold, but the second gives the radiologist much more to work with. Probabilities also let us plug in costs, combine models, and explain risk to patients. Calibration asks whether a predicted 40% really means that 40% of such cases are positive. The Niculescu-Mizil and Caruana paper is the classic empirical study of which models are calibrated out of the box.
+
+---
+class: spacious, fit
+# Calibration curve (Reliability diagram)
+.left-column[
+![:scale 100%](images/prob_table.png)
+]
+.right-column[
+![:scale 100%](images/calib_curve.png)
+
+]
+
+???
+To measure calibration for a binary problem, bin the test samples by predicted probability of the positive class, and in each bin compare the mean prediction with the observed fraction of positives. Here three bins: the model says about 0.5 in the middle bin but no sample there is positive, so that bin is badly miscalibrated. We only need the 0/1 labels, not true probabilities. Stress that calibration and accuracy are different: always predicting the base rate is perfectly calibrated and useless.
+
+---
+class: split-40, fit
+# calibration_curve with sklearn
+
+Using subsample of covertype dataset
+.left-column[
+.tiny-code[
+```python
+from sklearn.linear_model import LogisticRegressionCV
+print(X_train.shape)
+print(np.bincount(y_train))
+lr = LogisticRegressionCV(max_iter=1000, scoring="neg_log_loss",
+                          l1_ratios=(0,)).fit(X_train, y_train)
+(52292, 54)
+[19036 33256]
+```
+
+```python
+lr.C_
+2.783
+```
+
+```python
+print(lr.predict_proba(X_test)[:10])
+print(y_test[:10])
+[[0.682 0.318]
+ [0.049 0.951]
+ [0.705 0.295]
+ [0.537 0.463]
+ [0.819 0.181]
+ [0.    1.   ]
+ [0.795 0.205]
+ [0.676 0.324]
+ [0.728 0.272]
+ [0.596 0.404]]
+[0 1 0 1 1 1 0 0 0 1]
+```
+
+]
+]
+
+.right-column[
+.tiny-code[
+```python
+from sklearn.calibration import calibration_curve
+probs = lr.predict_proba(X_test)[:, 1]
+prob_true, prob_pred = calibration_curve(y_test, probs, n_bins=5)
+print(prob_true)
+print(prob_pred)
+[0.198 0.304 0.458 0.71  0.933]
+[0.138 0.306 0.498 0.702 0.926]
+```
+]
+.center[![:scale 70%](images/predprob_positive.png)
+]
+]
+
+???
+We use a 52,000-sample subset of the covertype data, a real forestry dataset, as a binary problem. Logistic regression minimizes log loss, so we expect it to be reasonably calibrated. `calibration_curve` returns the observed fraction and mean prediction per bin; the lowest bin predicts 0.14 on average but 20% are positive, the others are close to the diagonal. Always compute this on held-out data: on the training set an overfit model looks perfect.
+
+---
+# CalibrationDisplay
+
+.smaller[
+```python
+from sklearn.calibration import CalibrationDisplay
+
+fig, ax = plt.subplots()
+CalibrationDisplay.from_estimator(lr, X_test, y_test, n_bins=10, name="LogReg", ax=ax)
+CalibrationDisplay.from_predictions(y_test, rf_probs, n_bins=10, name="RF", ax=ax)
+# strategy="quantile" puts the same number of samples in each bin
+```
+]
+
+- Same pattern as the other `*Display` classes
+- Keeps `prob_true`, `prob_pred`, `y_prob` for further use
+
+???
+`CalibrationDisplay` wraps `calibration_curve` in the plotting API from Part 1, so you can overlay several models on one axes. With `strategy="quantile"` each bin contains the same number of samples, which avoids nearly empty bins at the extremes; it is often the better choice for skewed predictions. I recommend showing a histogram of predicted probabilities next to every reliability diagram; the backup has a slide on how the number of bins changes the picture.
+
+---
+class:spacious
+# Comparing Models
+
+.center[![:scale 90%](images/calib_curve_models.png)]
+???
+Three typical patterns. Logistic regression is close to the diagonal. An unpruned decision tree predicts only 0 or 1 because its leaves are pure, so it is maximally overconfident. The random forest is under-confident at the extremes: averaging many trees pulls predictions towards the middle, giving the characteristic S-shape. Ask the class which pattern a Naive Bayes model would show; it is usually overconfident because of the independence assumption.
+
+---
+class: fit2
+# Brier Score (for binary classification)
+
+- “mean squared error of probability estimate”
+`$$ BS = \frac{1}{n}\sum_{i=1}^{n} (\widehat{p}(y_i = 1 \mid x_i) - y_i)^{2}$$`
+
+.center[![:scale 60%](images/models_bscore.png)]
+
+.smaller[
+| | Brier | log loss | ROC AUC |
+|---|---|---|---|
+| LogisticRegression | 0.156 | 0.467 | 0.841 |
+| DecisionTree | 0.125 | 1.733 | 0.864 |
+| RandomForest | 0.071 | 0.247 | 0.970 |
+]
+???
+The Brier score is the mean squared error between the predicted probability and the 0/1 label; lower is better. Log loss is the other standard proper scoring rule and punishes confident mistakes much harder: the decision tree has a middling Brier score but a very bad log loss because of its 0/1 predictions. Both scores mix calibration with discrimination, which is why the forest wins even though it is not the best calibrated: it ranks much better. A constant prediction at the base rate is perfectly calibrated and gets a Brier score of 0.231 with ROC AUC 0.5 here.
+
+---
+class: fit
+# Fixing it: Calibrating a classifier
+- Build another model, mapping classifier probabilities to better probabilities!
+- 1d model! (or more for multi-class)
+
+`$$ f_{calib}(s(x)) \approx p(y = 1 \mid x)$$`
+
+- s(x) is the score given by the model
+- Can also work with models that don’t even provide probabilities!
+- Need a model for $f_{calib}$, and need to decide what data to train it on.
+  - Train on training set → overfit
+  - Train using a hold-out set or cross-validation → unbiased, costs data or time
+
+???
+Calibration is a small one-dimensional model on top of the classifier's score, very much like stacking. The score can be `decision_function` output, so even an SVM gets probabilities. The key question is which data to fit the calibrator on: the training data are useless, because the model is overconfident there. So we need held-out predictions, from a validation split or from cross-validation.
+
+---
+# Platt Scaling
+
+- Use a logistic sigmoid for $f_{calib}$
+- Basically learning a 1d logistic regression
+- (+ some tricks)
+- Works well for SVMs
+
+`$$f_{platt} = \frac{1}{1 + \exp(-w s(x) - b)}$$`
+
+
+???
+Platt scaling fits a logistic regression with a single input, the model's score, so it learns only a slope and an offset. That makes it data-efficient and robust with small calibration sets, but it can only correct sigmoid-shaped distortions, which is typical for SVMs and max-margin models. For multi-class problems scikit-learn also offers temperature scaling (`method="temperature"`), a single parameter that rescales all logits before the softmax.
+
+---
+# Isotonic Regression
+
+- Very flexible way to specify $f_{calib}$
+- Learns arbitrary monotonically increasing step-functions in 1d.
+- Groups data into constant parts, steps in between.
+- Optimum monotone function on training data (wrt mse).
+.center[![:scale 40%](images/isotonic_regression.png)]
+
+???
+Isotonic regression fits the best non-decreasing step function to the labels, in the squared-error sense. It can correct any monotone distortion, including the S-shape of random forests, but it needs more data than Platt scaling and can overfit with a few hundred calibration samples. Because it is monotone, it preserves the ranking up to ties, so ROC AUC changes very little.
+
+---
+# CalibratedClassifierCV
+.tiny-code[
+```python
+from sklearn.calibration import CalibratedClassifierCV
+X_train_sub, X_val, y_train_sub, y_val = train_test_split(X_train, y_train,
+                                                          stratify=y_train, random_state=0)
+rf = RandomForestClassifier(random_state=0).fit(X_train_sub, y_train_sub)
+scores = rf.predict_proba(X_test)[:, 1]
+CalibrationDisplay.from_predictions(y_test, scores, n_bins=20)
+```
+.center[![:scale 30%](images/random_forest.png)]
+]
+???
+There are two options for the calibrator's data: a hold-out set, which costs the classifier some training data, or cross-validation, which costs extra fits. First the hold-out approach. We split the training data into a part for the forest and a validation part for the calibrator. Uncalibrated, the forest shows the S-shape we saw before, with a Brier score of 0.076.
+
+---
+class: fit
+# Calibration on Random Forest
+.smaller[
+```python
+from sklearn.frozen import FrozenEstimator
+# the forest is already fitted: freeze it, fit only the calibrator
+cal_rf = CalibratedClassifierCV(FrozenEstimator(rf), method='sigmoid')
+cal_rf.fit(X_val, y_val)
+scores_sigm = cal_rf.predict_proba(X_test)[:, 1]
+
+cal_rf_iso = CalibratedClassifierCV(FrozenEstimator(rf), method='isotonic')
+cal_rf_iso.fit(X_val, y_val)
+scores_iso = cal_rf_iso.predict_proba(X_test)[:, 1]
+```]
+
+.center[![:scale 80%](images/types_calib.png)]
+
+???
+To calibrate an already fitted model, wrap it in `FrozenEstimator`; `fit` then leaves the forest untouched and only fits the calibrator on the data you pass, here the validation set. This replaces the old `cv="prefit"` option, which has been removed. Both methods move the curve onto the diagonal, and isotonic gives the better Brier score here. The cost is that the forest was trained on only three quarters of the training data.
+
+---
+# Cross-validated Calibration
+
+```python
+cal_rf_iso_cv = CalibratedClassifierCV(RandomForestClassifier(random_state=0),
+                                       method='isotonic', cv=5)
+cal_rf_iso_cv.fit(X_train, y_train)
+scores_iso_cv = cal_rf_iso_cv.predict_proba(X_test)[:, 1]
+```
+
+.center[![:scale 80%](images/types_calib_cv.png)]
+
+???
+Passing an unfitted estimator and `cv=5` does the splitting internally. In each fold a forest is trained on four fifths and its calibrator on the remaining fifth; at prediction time the five calibrated models are averaged. The Brier score improves to 0.065, partly from better calibration and partly because we now average five forests trained on more data, so be careful when you attribute the gain. The `ensemble=False` variant, which deploys a single refit model, and multi-class calibration are in the backup.
+
+---
+# Logging competing models to MLflow
+
+.smaller[
+```python
+import mlflow
+mlflow.set_experiment("week07-evaluation")
+for name, model in candidates.items():
+    with mlflow.start_run(run_name=name):
+        model.fit(X_train, y_train)
+        p = model.predict_proba(X_test)[:, 1]
+        mlflow.log_metrics({"brier": brier_score_loss(y_test, p),
+                            "log_loss": log_loss(y_test, p),
+                            "roc_auc": roc_auc_score(y_test, p)})
+        fig, ax = plt.subplots()
+        CalibrationDisplay.from_predictions(y_test, p, ax=ax, name=name)
+        mlflow.log_figure(fig, f"calibration_{name}.png")
+```
+]
+- Lab section 8: five models on the Adult census data; compare runs in `uv run mlflow ui`
+
+???
+This is the pattern for the lab: one MLflow run per model, with metrics that measure both discrimination and calibration, and the reliability diagram stored as an artifact next to the numbers. In the UI you can sort runs by Brier score and open each model's plot. Next week we build on this with proper experiment tracking for hyperparameter searches.
+
+---
+class: center, middle
+
+## Recap on imbalanced data
+
+???
+Now the second half of Part 2. We have already seen how to evaluate imbalanced problems; now we look at changing the model or the training data.
+
+---
+class: spacious
+
+# Two sources of imbalance
+
+- Asymmetric cost
+- Asymmetric data
+
+???
+A classification task can be imbalanced in two ways. Costs can be asymmetric even when classes are equally frequent: a missed finding is worse than a false alarm. And data can be asymmetric: one class is much rarer. The two are often confused, and the remedies differ: costs are best handled at the decision (threshold) level, rarity at the estimation level. We already have the threshold remedy from Part 1: `TunedThresholdClassifierCV` with a cost scorer, ideally on calibrated probabilities. So the order I recommend is: calibrate, tune the threshold, and only then consider changing the model.
+
+---
+# Mammography Data, baselines
+
+.smaller[
+```python
+from sklearn.model_selection import cross_validate
+from sklearn.linear_model import LogisticRegression
+
+scores = cross_validate(LogisticRegression(),
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+```
+0.920, 0.635
+```python
+from sklearn.ensemble import RandomForestClassifier
+scores = cross_validate(RandomForestClassifier(random_state=0),
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+```
+0.936, 0.732
+]
+
+???
+Can we change how the model is built so that it accounts for rare classes, beyond changing the threshold? Same mammography data as in Part 1, with a stratified split. Our baselines, with 10-fold cross-validation on the training set: logistic regression reaches ROC AUC 0.920 and average precision 0.635; the forest 0.936 and 0.732. Keep these numbers in mind, every remedy is compared against them.
+
+---
+# Basic Approaches
+
+.left-column[
+.center[
+![:scale 100%](images/basic_approaches.png)
+]
+]
+
+.right-column[
+</br>
+</br>
+</br>
+</br>
+
+Change the training procedure
+]
+
+???
+Two families: change the data, by removing majority samples (undersampling), adding minority samples (oversampling) or both; or change the training procedure, through class weights or specialized ensembles. Changing the data is the easiest to apply to any model, but it needs care: a scikit-learn transformer cannot change the number of samples, so resampling needs the samplers and the `Pipeline` from `imbalanced-learn`, which is already in our environment.
+
+---
+# Random Undersampling
+
+.smaller[
+```python
+from imblearn.pipeline import make_pipeline as make_imb_pipeline
+
+undersample_pipe = make_imb_pipeline(RandomUnderSampler(), LogisticRegression())
+scores = cross_validate(undersample_pipe,
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.920, 0.635
+```
+```
+0.918, 0.535
+```
+]
+--
+.smaller[
+```python
+undersample_pipe_rf = make_imb_pipeline(RandomUnderSampler(),
+                                        RandomForestClassifier())
+scores = cross_validate(undersample_pipe_rf,
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.936, 0.732
+```
+```
+0.949, 0.591
+```
+
+]
+
+???
+This is the one resampling example I show in the main flow; oversampling, SMOTE and resampling ensembles are in the backup. Random undersampling drops majority samples until the classes are balanced, here keeping 390 of 8,387 training samples. The imbalanced-learn pipeline calls the sampler's `fit_resample` only during `fit`, so each validation fold is scored on its original distribution. For logistic regression, ROC AUC is essentially unchanged and average precision drops. For the forest, ROC AUC goes up from 0.936 to 0.949 while average precision drops from 0.732 to 0.591. The two metrics disagree because they emphasize different parts of the curve. Given that we used 5% of the data, holding ROC AUC is remarkable, and for very large datasets undersampling is a practical way to afford a more expensive model. Treat resampling as an experiment to compare against the tuned-threshold baseline, not as a default step.
+
+---
+class: spacious
+
+# Class-weights
+
+- Instead of repeating samples, re-weight the loss function.
+- Works for most models!
+- Same effect as over-sampling (though not random), but not as expensive (dataset size the same).
+
+???
+Instead of repeating samples we can weight their loss. A weight of 40 on each positive has the same effect on the objective as repeating it 40 times, without enlarging the dataset and without randomness. Most scikit-learn classifiers accept `class_weight`, and most estimators accept `sample_weight` in `fit`. In linear models and SVMs the weight multiplies each sample's loss; in trees it enters the impurity and the leaf vote; `class_weight="balanced"` gives class k the weight n / (number of classes × n_k). The formulas are in the backup.
+
+---
+# Using Class-Weights
+
+.smaller[
+```python
+scores = cross_validate(LogisticRegression(class_weight='balanced'),
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.920, 0.635
+```
+0.919, 0.582
+```python
+scores = cross_validate(RandomForestClassifier(class_weight='balanced'),
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.936, 0.732
+```
+0.938, 0.725
+]
+
+???
+Class weights give almost the same numbers as random oversampling for logistic regression, as the equivalence predicts (the oversampling numbers are in the backup), at no extra cost. For the forest the ranking metrics stay close to the baseline. What class weights do change a lot is the default threshold: recall at `predict` goes up and precision goes down. So if you only need a different operating point, tune the threshold; use weights when the model's fit itself needs to focus on the minority class.
+
+---
+# What goes wrong in practice
+
+.smaller[
+```python
+# resampling BEFORE cross-validation
+X_res, y_res = SMOTE().fit_resample(X_train, y_train)
+cross_validate(RandomForestClassifier(), X_res, y_res, cv=5, scoring="average_precision")
+```
+```
+reported average precision: 0.989      # honest (SMOTE inside the pipeline): 0.688
+```
+]
+
+- Resampling before splitting leaks: synthetic points built from validation positives, balanced validation folds
+- Resampling and class weights **distort probabilities**: re-calibrate, or tune the threshold afterwards
+- For well-specified probabilistic models, "fixing" imbalance can hurt: van den Goorbergh et al., *JAMIA* 2022; Elor & Averbuch-Elor, *To SMOTE, or not to SMOTE?* 2022
+
+???
+SMOTE creates synthetic positives by interpolating between a positive and one of its nearest positive neighbours; the details are in the backup. The first mistake is common in published work: resampling the whole dataset and then cross-validating. The validation folds contain synthetic points interpolated from their own neighbors and have a balanced class distribution, so average precision jumps from 0.69 to 0.99. Second, any resampling or weighting changes the base rate the model sees, so its probabilities are no longer calibrated for the real population. Third, recent studies find that with strong models, such as gradient boosting, a calibrated model plus a tuned threshold often matches or beats resampling. My default is: good probabilistic model, calibrate, tune the threshold for the cost; try resampling as an experiment, not as a reflex.
+
+---
+class: center, middle
+
+# Try it 3: spot the leak (10 min)
+
+.left[
+Lab section 6. A colleague reports a big gain from SMOTE.
+
+1. Run their code and note the reported average precision
+2. Find the problem and fix it (hint: `imblearn.pipeline`)
+3. Which number would you put in a paper? What else would you report?
+]
+
+???
+Most students find the leak quickly once they know to look for it; the discussion is the valuable part. Ask what else belongs in the paper: the class distribution of the test set, a baseline without resampling, and uncertainty across folds. If time allows, ask them to predict what happens to the calibration of the SMOTE model on the original test distribution.
+
+---
+class: spacious, fit
+
+# Summary
+
+- Pick the metric from the application; report a ranking metric and a thresholded one
+- The threshold is a decision: tune it with CV (`TunedThresholdClassifierCV`), with costs if you have them
+- Check calibration (reliability diagram, Brier score); calibrate with `CalibratedClassifierCV`
+- Imbalance: calibrate and tune the threshold first; class weights are cheap; resampling is an experiment
+- Resample inside the pipeline, never before the split
+
+???
+If you remember one workflow from today: choose the metric with the stakeholder, compare models with ranking metrics in cross-validation, calibrate the chosen model if probabilities matter, then tune the threshold for the actual costs, and report everything on an untouched test set. Next week, Week 8, we turn model comparison into a systematic process: hyperparameter tuning, nested cross-validation, statistical comparison of models, and MLflow tracking of all of it.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (40 slides); they are not needed for the homework or the project.
+
+---
+class: center, spacious
+# The Zoo
+![:scale 100%](images/zoo.png)
+
+https://en.wikipedia.org/wiki/Precision_and_recall
+???
+Different fields use different names for the same ratios: medicine says sensitivity and specificity, information retrieval says precision and recall. You do not need to memorize the table, but you should be able to rebuild any entry from the confusion matrix. The Wikipedia page is a good reference to keep open.
+
+---
+# Side note: Scikit-learn plotting API
+.smaller[
+```python
+pr_svc = PrecisionRecallDisplay.from_estimator(svc, X_test, y_test, name='SVC')
+# plot pops up here
+vars(pr_svc)
+```
+```
+{'precision': array([0.023, 0.023, ..., 1.   , 1.   ]),
+ 'recall': array([1.   , 0.984, ..., 0.016, 0.   ]),
+ 'average_precision': 0.635,
+ 'estimator_name': 'SVC',
+ 'line_': <matplotlib.lines.Line2D at ... >,
+ 'ax_': <Axes: ...>,
+ 'figure_': <Figure size 640x480 with 1 Axes>}
+```
+```python
+# plot again (e.g. into another axes) without recomputing
+pr_svc.plot(ax=ax)
+# or start from scores you already have
+PrecisionRecallDisplay.from_predictions(y_test, svc.decision_function(X_test))
+```
+]
+???
+All the `*Display` classes follow the same pattern: a class method computes the values, stores them on the object, and draws. You can re-plot without recomputing, which is useful for expensive models, and you can pass `ax=` to combine several curves in one figure. `from_predictions` is the version to use when you only have saved scores.
+
+---
+class: fit2
+.left-column[
+# PR-Curve
+![:scale 100%](images/precision_recall_curve.png)
+]
+.right-column[
+# ROC-Curve
+![:scale 100%](images/roc_curve_svc.png)
+]
+.reset-column[
+- Share one axis (recall = TPR), though it is on different sides
+- Linear interpolation is meaningful on the ROC curve but not on the PR curve
+]
+???
+Both curves contain the same information about the ranking, but they emphasize different regions. With 2% positives, a small false positive rate still means many false positives, which the ROC curve hides and the PR curve shows. Interpolating linearly between two ROC points corresponds to randomly mixing two classifiers, so it is achievable; on the PR curve it is not, which is why average precision uses a step function.
+
+---
+class: spacious
+# Further reading on evaluation curves
+
+- [The Relationship Between Precision-Recall and ROC Curves](https://www.biostat.wisc.edu/~page/rocpr.pdf) (Davis & Goadrich, ICML 2006)
+- [Precision-Recall-Gain Curves: PR Analysis Done Right](https://papers.nips.cc/paper/5867-precision-recall-gain-curves-pr-analysis-done-right.pdf) (Flach & Kull, NeurIPS 2015)
+- [Scikit-learn user guide: tuning the decision threshold](https://scikit-learn.org/stable/modules/classification_threshold.html)
+
+???
+Davis and Goadrich show that a curve dominates in ROC space if and only if it dominates in PR space, and explain why PR interpolation is non-linear. Flach and Kull propose a rescaled PR curve with a proper baseline. The scikit-learn guide is the practical reference for the threshold tools we see next; it is a good starting point for the project reports.
+
+---
+class: center, middle
+# Multi-class classification
+???
+Most of what we said carries over to more than two classes, with two complications: the confusion matrix grows quadratically, and there is no single threshold to tune.
+
+---
+class: fit
+# Multi-class ROC AUC
+- Hand &amp; Till, 2001, one vs one
+`$$ \frac{1}{c(c-1)}\sum_{j=1}^{c}\sum_{k \neq j}^{c} AUC(j,k)$$`
+- Provost &amp; Domingos, 2000, one vs rest
+`$$ \frac{1}{c}\sum_{j=1}^{c}p(j) AUC(j,\text{rest}_j)$$`
+
+.smaller[
+```python
+roc_auc_score(y_test, lr.predict_proba(X_test), multi_class="ovo", average="macro")
+# scorer names: roc_auc_ovo, roc_auc_ovo_weighted, roc_auc_ovr, roc_auc_ovr_weighted
+```
+]
+???
+There are two families. Hand and Till average the AUC over all pairs of classes (one-vs-one); Provost and Domingos average one-vs-rest AUCs weighted by class prevalence. Each can be weighted or unweighted, so four variants exist, and all four are available in `roc_auc_score` and as scorer strings. Unweighted versions give each class the same importance, which is usually what you want with imbalanced classes.
+
+---
+# Built-in scoring
+```python
+from sklearn.metrics import get_scorer_names
+print(get_scorer_names())
+```
+.smaller[
+```
+accuracy                        adjusted_mutual_info_score      adjusted_rand_score
+average_precision               balanced_accuracy               completeness_score
+d2_absolute_error_score         d2_brier_score                  d2_log_loss_score
+explained_variance              f1                              f1_macro
+f1_micro                        f1_samples                      f1_weighted
+fowlkes_mallows_score           homogeneity_score               jaccard
+jaccard_macro                   jaccard_micro                   jaccard_samples
+jaccard_weighted                matthews_corrcoef               mutual_info_score
+neg_brier_score                 neg_log_loss                    neg_max_error
+neg_mean_absolute_error         neg_mean_absolute_percentage_error
+neg_mean_gamma_deviance         neg_mean_poisson_deviance       neg_mean_squared_error
+neg_mean_squared_log_error      neg_median_absolute_error       neg_negative_likelihood_ratio
+neg_root_mean_squared_error     neg_root_mean_squared_log_error normalized_mutual_info_score
+positive_likelihood_ratio       precision  ...  recall  ...     r2   rand_score
+roc_auc   roc_auc_ovo   roc_auc_ovo_weighted   roc_auc_ovr   roc_auc_ovr_weighted
+top_k_accuracy                  v_measure_score
+```
+]
+
+???
+These are the 58 scorer strings in the current scikit-learn; the old `SCORERS` dictionary no longer exists, use `get_scorer_names()`. They cover classification, regression and clustering, and the documentation lists which is which. Remember the convention: every scorer is "greater is better", so losses appear with a `neg_` prefix, such as `neg_log_loss` and `neg_root_mean_squared_error`.
+
+---
+# The Scorer interface (vs the metrics interface)
+```python
+# metric function interface: (y_true, y_pred or y_score)
+y_probs = rf.predict_proba(X_test)
+ap_rf = average_precision_score(y_test, y_probs[:, 1])
+y_pred = rf.predict(X_test)
+ba_rf = balanced_accuracy_score(y_test, y_pred)
+# scorer interface: (estimator, X, y)
+from sklearn.metrics import get_scorer, make_scorer
+ap_scorer = get_scorer('average_precision')
+ap_rf = ap_scorer(rf, X_test, y_test)
+ba_scorer = get_scorer('balanced_accuracy')
+ba_rf = ba_scorer(rf, X_test, y_test)
+# turn a metric into a scorer
+f2_scorer = make_scorer(fbeta_score, beta=2)
+```
+???
+There are two interfaces. Metrics take true labels and predictions or scores; scorers take a fitted estimator and data, and decide themselves whether to call `predict`, `predict_proba` or `decision_function`. Cross-validation, grid search and `TunedThresholdClassifierCV` all use scorers. `make_scorer` converts any metric into a scorer; pass `response_method="predict_proba"` for metrics that need scores.
+
+---
+class:spacious
+# Providing your own callable
+- Takes estimator, X, y
+- Returns score – higher is better (always!)
+```python
+def accuracy_scoring(est, X, y):
+    return (est.predict(X) == y).mean()
+```
+???
+Any function with the signature `(estimator, X, y)` returning a number can be used as `scoring`. Here I re-implemented accuracy to show the pattern. Because the function receives the fitted model, it can compute anything, including properties of the model itself, as the next slide shows.
+
+---
+class: compact
+# You can access the model!
+.tiny-code[
+
+```python
+def nonzero(est, X, y):
+    return np.sum(est.coef_ != 0)
+
+tri = fetch_openml("triazines", version=1, as_frame=False)
+X_train, X_test, y_train, y_test = train_test_split(tri.data, tri.target, random_state=0)
+param_grid = {'alpha': np.logspace(-5, 0, 10)}
+# scoring can be string, single scorer, list or dict
+grid = GridSearchCV(Lasso(max_iter=10_000), param_grid, return_train_score=True,
+                    scoring={'r2': 'r2', 'num_nonzero': nonzero}, refit='r2')
+grid.fit(X_train, y_train)
+results = pd.DataFrame(grid.cv_results_)
+```
+
+]
+.center[
+![:scale 45%](images/lasso_alpha_triazine.png)
+]
+???
+This scorer ignores the data and returns the number of non-zero Lasso coefficients. Logging it alongside R² shows the trade-off between sparsity and accuracy as alpha changes: validation R² peaks around alpha of 0.002 with roughly a dozen features, while the models with the best training R² keep most of the 60 features. With `refit='r2'` the grid search still selects on R²; the extra scorer is for insight, or for a custom selection rule.
+
+---
+class:spacious
+# Influence of number of bins
+
+.center[![:scale 100%](images/influence_bins.png)]
+
+???
+More bins give more resolution but noisier estimates, the same trade-off as with histograms. This dataset has 58,000 test points, so even 50 bins are stable; with a few hundred test points, 5 to 10 bins or quantile binning are safer. The grey histogram shows where the predictions actually fall: bins with few samples deserve little attention.
+
+---
+class:spacious
+# Building the model
+- Using the training set is bad
+- Either use hold-out set or cross-validation
+- Cross-validation can be used to make unbiased probability predictions, use that as training set.
+
+???
+Two options. With a hold-out set, we fit the classifier on one part and the calibrator on the other, losing data for the classifier. With cross-validation, every sample gets an out-of-fold prediction that can be used to fit the calibrator, which uses all the data at the price of fitting the model several times.
+
+---
+class: center
+# Fitting the calibration model
+![:scale 60%](images/calibration_val_scores.png)
+???
+This is the raw material of calibration: the forest's predicted probability on the validation set, on the x-axis, against the true label, 0 or 1. The calibrator is a regression of these labels on these scores. Ask the class what a perfectly calibrated model would look like in this plot.
+
+---
+class: center
+
+# Fitting the calibration model
+![:scale 60%](images/calibration_val_scores_fitted.png)
+
+???
+The sigmoid fit and the isotonic step function are both regressions of the label on the score. The isotonic curve follows the S-shape of the forest more closely; the sigmoid is constrained to its shape. Where the two disagree you can see which distortions Platt scaling cannot fix.
+
+---
+class: fit2
+# `ensemble=True` vs `ensemble=False`
+
+.left-column[
+.smaller[
+```python
+CalibratedClassifierCV(rf, method="isotonic",
+                       cv=5, ensemble=True)
+# 5 (model, calibrator) pairs,
+# probabilities averaged
+
+CalibratedClassifierCV(rf, method="isotonic",
+                       cv=5, ensemble=False)
+# calibrator fit on cross_val_predict
+# output; one model refit on all data
+```
+]
+- `ensemble="auto"` (default): `False` for a `FrozenEstimator`, `True` otherwise
+]
+.right-column[
+![:scale 90%](images/calib_ensemble.png)
+]
+
+???
+With `ensemble=False`, cross-validation is only used to produce out-of-fold scores; one calibrator is fit on them, and a single model refit on all the data is used for prediction. That is cheaper at prediction time and gives you one model to deploy and inspect; it is also what `SVC(probability=True)` does internally. Here both variants reach almost the same Brier score, 0.065 and 0.063. Choose `ensemble=False` when model size or latency matters.
+
+---
+# Multi-Class Calibration
+
+.center[![:scale 80%](images/multi_class_calibration.png)]
+
+.smaller[
+Log loss: uncalibrated RF 1.533 · sigmoid (one-vs-rest) 0.539 · temperature scaling 0.652
+]
+
+???
+For more than two classes, sigmoid and isotonic calibration are applied one-vs-rest, one calibrator per class, and the outputs are renormalized to sum to one. The left panel shows how each test point's probability vector moves on the simplex; the right panel shows the learned mapping. Temperature scaling (`method="temperature"`) is the natively multi-class alternative with a single parameter, popular for neural networks; on this small forest example one-vs-rest sigmoid does better.
+
+---
+class: spacious
+
+# Why do we care?
+
+- Why should cost be symmetric?
+- All data is imbalanced
+- Detect rare events
+
+???
+In almost every application at least one of the two holds, usually both. Fraud detection, click prediction, equipment failure and screening all have positive rates between a fraction of a percent and a few percent. Ask the class to name a real problem with balanced classes and symmetric costs; it is surprisingly hard.
+
+---
+# Changing Thresholds
+.tiny-code[
+```python
+data = load_breast_cancer()
+
+X_train, X_test, y_train, y_test = train_test_split(
+    data.data, data.target, stratify=data.target, random_state=0)
+
+lr = make_pipeline(StandardScaler(), LogisticRegression()).fit(X_train, y_train)
+y_pred = lr.predict(X_test)
+print(classification_report(y_test, y_pred))
+```
+```
+              precision    recall  f1-score   support
+           0       0.94      0.94      0.94        53
+           1       0.97      0.97      0.97        90
+    accuracy                           0.96       143
+```
+```python
+y_pred = lr.predict_proba(X_test)[:, 1] > .85
+print(classification_report(y_test, y_pred))
+```
+```
+              precision    recall  f1-score   support
+           0       0.89      0.96      0.93        53
+           1       0.98      0.93      0.95        90
+    accuracy                           0.94       143
+```
+]
+
+???
+The simplest remedy is the one from Part 1: move the threshold. Requiring 0.85 before predicting class 1 raises its precision from 0.97 to 0.98 and the recall of class 0 from 0.94 to 0.96. With a cost matrix, `TunedThresholdClassifierCV` chooses this value for us.
+
+---
+class: fit
+# ROC Curve
+
+.center[
+![:scale 75%](images/roc_svc_rf_curve.png)
+]
+
+???
+Reminder: the ROC curve shows all thresholds at once, and the markers show where the default thresholds sit. For both models the default point is far to the left, at low false positive rate and moderate recall. Moving along the curve is free; moving the curve itself requires changing the model, which is what the rest of this part is about.
+
+---
+class: center, middle
+
+## Remedies for the model
+
+???
+Can we change how the model is built so that it accounts for rare classes, beyond changing the threshold? The options are changing the data, by resampling, or changing the training procedure, by reweighting or by ensembles.
+
+---
+class: center, spacious
+
+# Scikit-learn vs resampling
+
+![:scale 55%](images/pipeline.png)
+
+???
+A scikit-learn pipeline passes `X` through transformers, but `y` and the number of samples stay fixed, so a transformer cannot drop or add samples. Resampling needs to change both `X` and `y`, and it must happen only during `fit`, never on the data we predict on.
+
+- The transform method only transforms X
+- Pipelines work by chaining transforms
+- To resample the data, we need to also change y
+
+---
+class: spacious
+# Imbalanced-learn
+
+https://imbalanced-learn.org
+
+```
+uv add imbalanced-learn     # already in the course environment
+```
+
+Extends `sklearn` API
+
+???
+`imbalanced-learn` is a scikit-learn-contrib package that adds samplers, a pipeline that understands them, and resampling ensembles. It is already installed in our uv environment, so you only need the import. It follows the scikit-learn API closely, so everything we know about cross-validation and grid search carries over.
+
+---
+### Sampler
+
+To resample a data set, each sampler implements:
+```python
+  data_resampled, targets_resampled = obj.fit_resample(data, targets)
+```
+--
+<br />
+<br />
+In Pipelines:
+Sampling only done in `fit`!
+
+???
+Samplers have one method, `fit_resample`, which returns new `X` and `y`. The imbalanced-learn `Pipeline` calls it only while fitting, so the model is trained on resampled data but predictions and scores are computed on the original, untouched validation or test data. Not every sampler supports multi-class problems, so check the documentation.
+
+---
+# Random Undersampling
+
+```python
+from imblearn.under_sampling import RandomUnderSampler
+rus = RandomUnderSampler(replacement=False)
+X_train_subsample, y_train_subsample = rus.fit_resample(
+    X_train, y_train)
+print(X_train.shape)
+print(X_train_subsample.shape)
+print(np.bincount(y_train_subsample))
+```
+```
+(8387, 6)
+(390, 6)
+[195 195]
+```
+
+
+???
+Random undersampling drops majority samples until the classes are balanced. From 8,387 training samples we keep 390, so we throw away over 95% of the data, but training becomes about twenty times cheaper. The `sampling_strategy` parameter lets you stop at a less extreme ratio.
+
+- Drop data from the majority class randomly
+- Often until balanced
+- Very fast training (data shrinks to 2x minority)
+- Loses data!
+
+---
+# Random Oversampling
+
+```python
+from imblearn.over_sampling import RandomOverSampler
+ros = RandomOverSampler()
+X_train_oversample, y_train_oversample = ros.fit_resample(
+    X_train, y_train)
+print(X_train.shape)
+print(X_train_oversample.shape)
+print(np.bincount(y_train_oversample))
+```
+```
+(8387, 6)
+(16384, 6)
+[8192 8192]
+```
+???
+Random oversampling repeats minority samples, drawn with replacement, until the classes are balanced. The training set nearly doubles, and each positive appears about 40 times on average. Training gets slower, and models that can memorize, like deep trees, just memorize the repeated points.
+
+- Repeat samples from the minority class randomly
+- Often until balanced
+- Much slower (dataset grows to 2x majority)
+
+---
+# Random Oversampling
+
+.smaller[
+```python
+oversample_pipe = make_imb_pipeline(RandomOverSampler(), LogisticRegression())
+scores = cross_validate(oversample_pipe,
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.920, 0.635
+```
+0.918, 0.583
+]
+--
+.smaller[
+```python
+oversample_pipe_rf = make_imb_pipeline(RandomOverSampler(),
+                                       RandomForestClassifier())
+scores = cross_validate(oversample_pipe_rf,
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.936, 0.732
+```
+0.919, 0.708
+]
+
+???
+Oversampling does not help here: logistic regression is unchanged in ROC AUC and worse in average precision, the forest is worse on both. For the forest the reason is that trees grown to purity simply isolate the repeated minority points. Ask the class why logistic regression's ROC AUC barely moves: rebalancing mostly shifts the intercept, which changes the threshold but not the ranking.
+
+---
+# Curves for Random Forest
+
+.center[
+![:scale 100%](images/curves_rf.png)
+]
+
+???
+For the forest, the ROC curve favours undersampling in the high-recall region, while the PR curve favours the original model in the high-precision region. The same models, two different winners, depending on the metric. That is why I insist on looking at both curves, and on knowing where on the curve your application operates.
+
+---
+# Curves for LogReg
+
+.center[
+![:scale 100%](images/curves_logreg.png)
+]
+
+???
+On the test set, the three logistic regression variants have nearly identical ROC curves. The precision-recall curves differ more: the original model is best over the middle of the recall range and undersampling is worst, matching the cross-validation numbers. Rebalancing mostly moves the intercept of a linear model, so little else changes.
+
+---
+class: spacious, fit2
+
+# Class-weights in linear models
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}} C \sum_{i=1}^n\log(\exp(-y_i(w^T \textbf{x}_i + b )) + 1) + ||w||_2^2$$`
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}} C \sum_{i=1}^n c_{y_i}  \log(\exp(-y_i(w^T \textbf{x}_i + b )) + 1) + ||w||_2^2$$`
+
+Similar for linear and non-linear SVM
+
+???
+For logistic regression, each sample's loss is multiplied by the weight of its class, which is equivalent to using a different C per class. With `class_weight="balanced"` the weight of class k is n divided by (number of classes times n_k), so each class contributes equally to the loss. The same works for the hinge loss in SVMs.
+
+---
+class: fit
+# Class weights in trees
+
+Gini Index:
+
+`$$H_\text{gini}(X_m) = \sum_{k\in\mathcal{Y}} p_{mk} (1 - p_{mk})$$`
+
+`$$H_\text{gini}(X_m) = \sum_{k\in\mathcal{Y}} c_k p_{mk} (1 - p_{mk})$$`
+
+Prediction:
+
+Weighted vote
+
+???
+In trees the class weights enter the impurity computation, so splits that isolate minority samples become more attractive, and leaf predictions become weighted votes. Again this is equivalent to replicating each sample c_k times. Gradient boosting libraries such as LightGBM and XGBoost offer the same through `scale_pos_weight` or sample weights.
+
+---
+class: spacious
+
+# Ensemble Resampling
+
+- Random resampling separate for each instance in an ensemble!
+- Chen, Liaw, Breiman: “Using random forest to learn imbalanced data.” (2004)
+- Liu, Wu, Zhou: “Exploratory Undersampling for Class-Imbalance Learning” (2009)
+- Not in scikit-learn; available in imbalanced-learn
+
+???
+Undersampling throws away data, but in an ensemble we can undersample differently for each member. Each tree sees all positives and a different random subset of negatives, so across the ensemble most of the negatives are used. This is the idea behind balanced random forests and EasyEnsemble; the implementations live in imbalanced-learn.
+
+---
+# Easy Ensemble with imblearn
+
+.smaller[
+```python
+from sklearn.tree import DecisionTreeClassifier
+from imblearn.ensemble import BalancedBaggingClassifier, BalancedRandomForestClassifier
+
+tree = DecisionTreeClassifier(max_features='sqrt')
+resampled_rf = BalancedBaggingClassifier(estimator=tree, n_estimators=100,
+                                         random_state=0)
+scores = cross_validate(resampled_rf,
+                        X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+scores['test_roc_auc'].mean(), scores['test_average_precision'].mean()
+# baseline was 0.936, 0.732
+```
+0.954, 0.667
+```python
+BalancedRandomForestClassifier(random_state=0)   # 0.952, 0.658
+```
+]
+
+???
+Bagging with a balanced undersample for each of 100 trees, each tree considering the square root of the number of features at each split, is essentially a balanced random forest; `BalancedRandomForestClassifier` gives nearly the same result directly. It reaches the best ROC AUC of all methods today, 0.954, at the cost of a single undersampled forest. Average precision is still below the plain forest, so in the high-precision region the original model remains better.
+
+---
+class: center, middle
+
+![:scale 100%](images/roc_vs_pr.png)
+???
+Comparing all forest variants on the test set: balanced bagging is strong in the high-recall region of the ROC curve and better than simple undersampling at high precision. Plain undersampling uses one subsample of the negatives for all trees; balanced bagging uses a different one per tree, so it sees far more of the data. If the screening program needs high recall, balanced bagging is a good, cheap choice.
+
+---
+class: center, middle
+
+## Synthetic Sample Generation
+
+???
+Instead of repeating minority samples we can create new ones. Many methods exist, and SMOTE is by far the best known, so it is worth understanding what it does and when it fails.
+
+---
+# Synthetic Minority Oversampling Technique (SMOTE)
+
+- Adds synthetic interpolated data to smaller class
+- For each sample in minority class:</br>
+  – Pick random neighbor from k neighbors (of the same class).</br>
+  – Pick point on line connecting the two uniformly.</br>
+  – Repeat.</br>
+
+
+???
+SMOTE generates new minority samples by interpolating between a minority sample and one of its k nearest minority-class neighbors. It relies on distances, so scale features first, and it becomes slow and less meaningful in high dimensions. For categorical features use variants such as SMOTENC. It is an oversampling method, so datasets grow, and it can be combined with undersampling.
+
+- Leads to very large datasets (oversampling)
+- Can be combined with undersampling strategies
+
+---
+class: center, middle
+
+.center[
+![:scale 100%](images/smote_mammography.png)
+]
+
+
+???
+Features 3 and 4 of the mammography data, before and after SMOTE. The synthetic points fill in the segments between nearby positives, so the minority class looks like a set of connected lines. Ask whether these points look like plausible new mammograms; in six dimensions with skewed features, the answer is not obvious.
+
+---
+.smaller[
+```python
+smote_pipe = make_imb_pipeline(SMOTE(), LogisticRegression())
+scores = cross_validate(smote_pipe, X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+pd.DataFrame(scores)[['test_roc_auc', 'test_average_precision']].mean()
+# baseline was 0.920, 0.635
+```
+0.920, 0.584
+
+```python
+smote_pipe_rf = make_imb_pipeline(SMOTE(),
+                                  RandomForestClassifier())
+scores = cross_validate(smote_pipe_rf, X_train, y_train, cv=10,
+                        scoring=('roc_auc', 'average_precision'))
+pd.DataFrame(scores)[['test_roc_auc', 'test_average_precision']].mean()
+# baseline was 0.936, 0.732
+```
+0.943, 0.690
+
+]
+
+???
+SMOTE gives results between the baseline and the random resampling methods: logistic regression is unchanged in ROC AUC and worse in average precision, the forest gains a little ROC AUC and loses average precision. There is no free lunch from synthetic samples here.
+
+---
+.smaller[
+```python
+param_grid = {'smote__k_neighbors': [3, 5, 7, 11, 15, 31]}
+search = GridSearchCV(smote_pipe_rf, param_grid, cv=5,
+                      scoring="average_precision", return_train_score=True)
+search.fit(X_train, y_train)
+results = pd.DataFrame(search.cv_results_)
+results.plot("param_smote__k_neighbors", ["mean_test_score", "mean_train_score"])
+```
+]
+.center[
+![:scale 50%](images/param_smote_k_neighbors.png)
+]
+
+???
+The number of neighbors is a hyperparameter of the pipeline, so we can tune it with `GridSearchCV` using the `smote__` prefix. The best value here is 15 with average precision 0.696, but the shaded band of one standard deviation across folds is much wider than the differences between settings. This is a good example of tuning noise, which we treat properly next week with statistical comparison of models.
+
+---
+.center[
+![:scale 100%](images/smote_k_neighbors.png)
+]
+
+???
+With more neighbors, SMOTE interpolates between points that are further apart, so the synthetic samples spread over a larger region. Whether that helps depends on whether the space between positives really belongs to the positive class.
+
+---
+class: center, middle
+
+.center[
+![:scale 100%](images/roc_vs_pr_smote.png)
+]
+
+
+???
+All forest variants together on the test set. In ROC space the resampling methods look better than the original; in precision-recall space they mostly do not. With only 65 positives in the test set, many of these differences are within noise.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

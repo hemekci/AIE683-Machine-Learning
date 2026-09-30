@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 2: Generalization & Validation</title>
+    <meta charset="utf-8">
+        <style>
+        </style>
+        <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 2: Generalization & Validation
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Welcome back. Last week we set up the tooling: uv, Git, and MLflow.
+Today is about the question behind every model we build in this course:
+how do we know it will work on data we have not seen?
+We use the simplest possible classifier, nearest neighbors, as a vehicle
+to talk about overfitting, validation splits and cross-validation.
+
+---
+class: fit
+# A Model That Looked Great
+
+.smaller[
+A bike-sharing operator (Capital Bikeshare, Washington D.C.) moves bikes between stations every night.
+To plan the trucks, it needs **tomorrow's number of rentals**.
+
+- An analyst fits a model on two years of daily rentals, evaluates with a random 80/20 split: $R^2 \approx 0.7$.
+- The model goes into production and is evaluated on the following months: the predictions are worse than
+  simply predicting the average.
+- Same data, same model. The only difference: **how it was validated**.
+]
+
+.center[![:scale 55%](images/time_series1.png)]
+
+???
+I want to start with a concrete case, and we will reproduce it with real data at the end of the lecture.
+The operator's decision depends on a forecast, and the analyst's evaluation said the forecast was good.
+It was not wrong arithmetic; it was the wrong question: a random split measures interpolation between known days,
+while the operator needs extrapolation into the future.
+The numbers here come from our lab: a kNN regressor on the last seven days, R squared about 0.7 with a random split,
+and below zero with a time-based split. Keep this in mind; by the end of today you should be able to explain the gap.
+
+---
+# Today
+
+- Nearest neighbors as a first supervised model
+- Model complexity, overfitting and underfitting, bias and variance
+- Train / validation / test splits
+- Cross-validation and grid search
+- Cross-validation strategies: stratified, repeated, grouped, time series
+- Logging a hyper-parameter sweep to MLflow
+- Two in-class exercises (Try it 1 and 2) in `lab.ipynb`
+
+???
+Here is the plan. The first half is conceptual: what generalization means
+and why a single train/test split is not enough. The second half is about
+choosing a cross-validation strategy that matches how the model will be used.
+That second part matters in practice: most evaluation mistakes I see in
+student projects come from a splitter that does not match the data.
+
+---
+class: center, fit2
+
+# Supervised Learning
+
+.larger[
+$$ (x_i, y_i) \sim p(x, y) \text{ i.i.d.}$$
+$$ x_i \in \mathbb{R}^p$$
+$$ y_i \in \mathbb{R}$$
+$$\text{learn }f(x_i) \approx y_i$$
+such that
+$$f(x) \approx y \quad$$
+for new $(x, y) \sim p(x, y)$.
+]
+???
+In supervised learning, we learn from input-output pairs $(x_i, y_i)$, where
+$x_i$ is a p-dimensional feature vector and $y_i$ is the output we want to predict.
+We assume the samples are drawn i.i.d. from an unknown joint distribution $p(x, y)$.
+Fitting the training data is easy; the real requirement is the last line: for new
+$x$ drawn from the same distribution, $f(x)$ should be close to $y$.
+Keep the i.i.d. assumption in mind; in the second half we will see what to do
+when it does not hold.
+
+---
+class: center
+
+# Nearest Neighbors
+
+![:scale 40%](images/knn_boundary_test_points.png)
+$$f(x) = y_i, i = \text{argmin}_j || x_j - x||$$
+
+???
+Here is a two-class dataset with two features, and three new points marked by stars.
+A one-nearest-neighbor classifier predicts, for each new point, the label of the
+closest training point. That is about the simplest learning algorithm there is.
+Before I show the answer: what would you predict for each of the three stars?
+
+---
+class: center
+
+# Nearest Neighbors
+
+![:scale 40%](images/knn_boundary_k1.png)
+
+$$f(x) = y_i, i = \text{argmin}_j || x_j - x||$$
+
+???
+The lines connect each new point to its nearest training point, and the star takes that color.
+The formula says exactly this: find the index of the closest training point and return its label.
+Note that "closest" depends on the distance metric and on the scale of the features;
+we come back to scaling in Week 3.
+Now the key question: how do we find out whether these predictions are any good?
+
+---
+class: center
+
+![:scale 60%](images/train_test_set_2d_classification.png)
+
+???
+The simplest approach is to split the data into a training set and a test set,
+for example 75% and 25%. We fit the model on the training part and measure accuracy on the rest.
+If the i.i.d. assumption holds, the test accuracy is an unbiased estimate of accuracy on future data.
+The important word is "if": the test set has to look like the data the model will see later.
+
+---
+# KNN with scikit-learn
+
+```python
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+from sklearn.neighbors import KNeighborsClassifier
+knn = KNeighborsClassifier(n_neighbors=1)
+knn.fit(X_train, y_train)
+print(f"accuracy: {knn.score(X_test, y_test):.2f}")
+y_pred = knn.predict(X_test)
+```
+```
+accuracy: 0.77
+```
+
+???
+`train_test_split` does a random 75/25 split by default.
+Every scikit-learn model is a class: hyper-parameters such as `n_neighbors` are set in
+the constructor, and `fit` estimates everything that is learned from data.
+For nearest neighbors, `fit` simply stores the training set.
+`score` calls `predict` internally and, for classifiers, returns accuracy.
+This fit / predict / score interface is the same for every model in the course.
+
+---
+class: center, fit
+
+# Influence of Number of Neighbors
+
+![:scale 50%](images/knn_boundary_k1.png)
+
+???
+These are the one-nearest-neighbor predictions again.
+Instead of a single neighbor, we can look at several neighbors and take a majority vote.
+Let's see what happens with three.
+
+---
+class: center, some-space
+
+# Influence of n_neighbors
+
+![:scale 45%](images/knn_boundary_varying_k.png)
+
+???
+The background shows the predicted class at every location.
+With one neighbor, every training point carves out its own region: all training points
+are classified correctly, but the boundary is very irregular.
+As we increase the number of neighbors, the boundary gets smoother, and with 30 neighbors
+it is close to a line, at the price of misclassifying more training points.
+Question for you: which end of this range is the "complex" model?
+
+---
+class: center, spacious, fit
+
+# Model complexity
+
+![:scale 75%](images/knn_model_complexity.png)
+
+???
+Here I compare training and test accuracy for different numbers of neighbors on a single random split.
+With one neighbor, training accuracy is perfect but test accuracy is only about 70%.
+As the number of neighbors increases, training accuracy drops and test accuracy rises,
+peaking around 19 to 21 here, and then both go down.
+The curve is noisy because the dataset is tiny and this is one split; that noise is itself
+a warning we will come back to.
+
+---
+class: center, spacious
+# Overfitting and Underfitting
+
+![:scale 80%](images/overfitting_underfitting_cartoon_train.png)
+
+???
+Here is a schematic version of that plot. Note that it is mirrored relative to the kNN plot,
+because here complexity increases to the right, while for kNN complexity decreases with more neighbors.
+As we make a model more complex, training accuracy keeps going up,
+because the model can capture more and more of the variation in the training data.
+
+---
+class: center, spacious
+# Overfitting and Underfitting
+
+![:scale 80%](images/overfitting_underfitting_cartoon_generalization.png)
+
+???
+Generalization tells a different story. If the model is too simple, it misses the main trends,
+and adding complexity helps. Past some point, extra complexity lets the model memorize
+noise in the training set, and generalization gets worse.
+
+---
+class: center, spacious
+# Overfitting and Underfitting
+
+![:scale 80%](images/overfitting_underfitting_cartoon_full.png)
+
+???
+Too simple is underfitting, too complex is overfitting, and somewhere in between is a sweet spot.
+Almost every model we see in this course has a knob that moves along this axis:
+regularization strength in Week 4, tree depth in Week 5, network size in Week 6.
+For kNN: large `n_neighbors` means low complexity, small `n_neighbors` means high complexity.
+
+---
+# Bias and Variance
+
+For squared loss, with $y = f(x) + \varepsilon$ and $\text{Var}(\varepsilon) = \sigma^2$,
+the expected error of a model $\hat{f}$ trained on a random training set is
+
+$$
+\mathbb{E}\big[(y - \hat{f}(x))^2\big] =
+\underbrace{\big(f(x) - \mathbb{E}[\hat{f}(x)]\big)^2}\_{\text{bias}^2}
++ \underbrace{\text{Var}\big[\hat{f}(x)\big]}\_{\text{variance}}
++ \underbrace{\sigma^2}\_{\text{noise}}
+$$
+
+.smaller[
+- **Bias**: error of the average model; high for too-simple models (underfitting)
+- **Variance**: how much the model changes with the training sample; high for too-complex models (overfitting)
+- **Noise**: irreducible, no model can remove it
+- kNN: small $k$ gives low bias and high variance; large $k$ gives high bias and low variance
+]
+
+???
+The same picture has a precise version for squared loss. The expectation is over training sets
+as well as over the noise: imagine drawing many training sets and refitting the model each time.
+Bias measures how far the average fitted model is from the truth; variance measures how much
+the fits disagree with each other. The noise term is a floor that no model can go below.
+For one-nearest-neighbor, each prediction depends on a single training point, so it changes a lot
+between training sets: high variance. A common misconception is that you can drive both terms to zero
+with enough tuning; in practice you trade one against the other, and more data is what reduces variance.
+
+---
+# Computational Properties
+.left-column[
+## Naive
+- fit: no time
+- memory: O(n * p)
+- predict: O(n * p)
+]
+.invisible[.right-column[
+## Kd-tree
+- fit: O(p * n log n)
+- memory: O(n * p)
+- predict:
+- O(k * log(n))<br />
+  FOR FIXED p!
+]]
+.reset-column[
+n=n_samples
+p=n_features
+]
+
+???
+How would you implement k nearest neighbors? The brute-force version needs no fitting,
+stores the whole dataset, and compares a new point against every training point at prediction time.
+So memory and prediction time both grow with the size of the training set, which is the opposite
+of most models, where prediction is cheap once training is done.
+
+---
+# So far: Train-test-split
+
+![:scale 100%](images/train_test_split_new.png)
+
+???
+So far we split the data once, trained on the training set and evaluated on the test set.
+Now suppose we want to choose `n_neighbors`. The obvious approach is to try several values
+and keep the one with the best test score. What is wrong with that?
+The choice of k may be fine, but the reported test score is now optimistic, because we
+used the test set to make a decision. It is no longer an independent estimate.
+
+---
+class: fit
+# Threefold split
+![:scale 100%](images/train_test_validation_split.png)
+???
+The simplest fix is a three-way split: a training set to fit models, a validation set to choose
+hyper-parameters, and a test set for one final evaluation.
+How many models should you evaluate on the test set? One. Every additional look at the test set
+turns it into another validation set.
+The downsides: less data for training, and the result depends on one particular random split.
+--
+<br />
+<br />
+.smallest[Related read: [A. Ng, Preventing "Overfitting" of Cross-Validation Data, ICML 1997](http://robotics.stanford.edu/~ang/papers/cv-final.pdf)]
+
+---
+class: center, fit
+# Overfitting the validation set
+
+![:scale 80%](images/overfitting_validation_set_1.png)
+
+???
+This is a cartoon to show why the validation score of the selected model is optimistic.
+Here are the training accuracy and the true generalization accuracy as a function of some hyper-parameter.
+We never observe the true curve; we only see noisy estimates of it.
+
+---
+# Threefold Split for Hyper-Parameters
+
+.smaller[
+```python
+X_trainval, X_test, y_trainval, y_test = train_test_split(X, y)
+X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval)
+
+val_scores = []
+neighbors = np.arange(1, 15, 2)
+for i in neighbors:
+    knn = KNeighborsClassifier(n_neighbors=i)
+    knn.fit(X_train, y_train)
+    val_scores.append(knn.score(X_val, y_val))
+print(f"best validation score: {np.max(val_scores):.3f}")
+best_n_neighbors = neighbors[np.argmax(val_scores)]
+print("best n_neighbors:", best_n_neighbors)
+
+knn = KNeighborsClassifier(n_neighbors=best_n_neighbors)
+knn.fit(X_trainval, y_trainval)
+print(f"test-set score: {knn.score(X_test, y_test):.3f}")
+```
+
+```
+best validation score: 0.925
+best n_neighbors: 5
+test-set score: 0.937
+```
+]
+???
+Here is the three-way split in code, on the breast cancer dataset.
+For each candidate k, we fit on the training set and score on the validation set.
+The best validation score is 92.5% with five neighbors. We then refit on training plus validation
+and evaluate once on the test set.
+Refitting is optional, but it uses more data for the final model.
+The weakness is that everything depends on one random split: rerun with another seed and k may change.
+
+---
+# Cross-validation
+.center[
+![:scale 80%](images/cross_validation_new.png)
+]
+???
+Cross-validation addresses that. We split the data into k folds, usually 5 or 10.
+Each fold serves once as the test fold while the model is trained on the others,
+so we get k scores that we aggregate, usually by the mean, and we can also look at their spread.
+Every data point is used for evaluation exactly once.
+--
+.smaller[
+pro: more stable, more data
+
+con: slower
+]
+???
+The cost is computation: k fits instead of one.
+Note that cross-validation replaces only one of the splits, usually the inner train/validation split.
+We still keep a separate test set.
+
+---
+class: center, some-space
+# Cross-validation + test set
+
+![:scale 105%](images/grid_search_cross_validation_new.png)
+
+???
+This is the standard workflow. First split off the test set and put it away.
+Run cross-validation on the training part for each hyper-parameter setting.
+Pick the best setting, retrain on the whole training part, and evaluate once on the test set.
+
+---
+# Grid-Search with Cross-Validation
+
+.smaller[
+```python
+from sklearn.model_selection import cross_val_score
+
+X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+cross_val_scores = []
+for i in neighbors:
+    knn = KNeighborsClassifier(n_neighbors=i)
+    scores = cross_val_score(knn, X_train, y_train, cv=10)
+    cross_val_scores.append(np.mean(scores))
+
+print(f"best cross-validation score: {np.max(cross_val_scores):.3f}")
+best_n_neighbors = neighbors[np.argmax(cross_val_scores)]
+print(f"best n_neighbors: {best_n_neighbors}")
+
+knn = KNeighborsClassifier(n_neighbors=best_n_neighbors)
+knn.fit(X_train, y_train)
+print(f"test-set score: {knn.score(X_test, y_test):.3f}")
+```
+
+```
+best cross-validation score: 0.927
+best n_neighbors: 7
+test-set score: 0.944
+```
+]
+
+???
+Here it is by hand. For each k, `cross_val_score` runs 10-fold cross-validation on the training set.
+We choose the k with the best mean score, refit on the full training set, and evaluate on the test set.
+A question for you: we have seven values of k and 10 folds. How many models do we train in total?
+Seventy for the search plus one final model, so 71.
+
+---
+class: center, middle
+![:scale 80%](images/gridsearch_workflow.png)
+
+???
+Here is the same workflow as a diagram. We start from the dataset and a parameter grid,
+split off a test set, use cross-validation on the training part to find the best parameters,
+refit with those parameters, and evaluate on the test set.
+This pattern is so common that scikit-learn packages it in one class, `GridSearchCV`.
+
+---
+# GridSearchCV
+.smaller[
+```python
+from sklearn.model_selection import GridSearchCV
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)
+
+param_grid = {'n_neighbors': list(range(1, 30, 2))}
+grid = GridSearchCV(KNeighborsClassifier(), param_grid=param_grid, cv=10,
+                    return_train_score=True)
+grid.fit(X_train, y_train)
+print(f"best mean cross-validation score: {grid.best_score_:.3f}")
+print(f"best parameters: {grid.best_params_}")
+print(f"test-set score: {grid.score(X_test, y_test):.3f}")
+```
+
+```
+best mean cross-validation score: 0.944
+best parameters: {'n_neighbors': 5}
+test-set score: 0.916
+```
+]
+???
+We still split off the test set ourselves. The parameter grid is a dictionary from parameter names
+to the values to try; with several parameters, all combinations are tried, hence "grid".
+`GridSearchCV` is a meta-estimator: it wraps an estimator and itself has fit, predict and score.
+`fit` runs the cross-validation, picks the best setting, and refits on the whole training set.
+Notice that the test score here is lower than the best cross-validation score; that is the
+optimism from the previous slides, plus the noise of a single test set of 143 samples.
+
+---
+class: center
+# n_neighbors Search Results
+
+![:scale 70%](images/grid_search_n_neighbors.png)
+???
+From `cv_results_` we can plot mean training and cross-validation accuracy with one standard
+deviation as a band. This is the model complexity plot from earlier, but now averaged over ten folds.
+Look at the width of the band: differences between neighboring k values are well inside it,
+so we should not read too much into which k wins by a fraction of a percent.
+
+---
+# Logging the Search to MLflow
+
+.smaller[
+```python
+import mlflow
+mlflow.set_experiment("week02-generalization-validation")
+
+cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=0)
+with mlflow.start_run(run_name="knn-k-sweep"):
+    mlflow.log_params({"dataset": "breast_cancer", "cv": "StratifiedKFold(10, shuffle)"})
+    for k in [1, 3, 5, 9, 15, 25]:
+        scores = cross_val_score(KNeighborsClassifier(n_neighbors=k),
+                                 X_train, y_train, cv=cv)
+        with mlflow.start_run(run_name=f"k={k}", nested=True):
+            mlflow.log_param("n_neighbors", k)
+            mlflow.log_metrics({"cv_accuracy_mean": scores.mean(),
+                                "cv_accuracy_std": scores.std()})
+            for fold, s in enumerate(scores):
+                mlflow.log_metric("cv_accuracy_fold", s, step=fold)
+```
+]
+.smaller[Then `uv run mlflow ui` and compare the child runs.]
+
+???
+From this week on, notebooks log their experiments to MLflow, as we set up in Week 1.
+Here each value of k becomes a nested child run under one parent run. We log the mean and
+standard deviation of the CV scores, and the individual fold scores with `step=fold`.
+Logging the splitter as a parameter matters: a score is only meaningful together with
+how it was computed. In the MLflow UI you can sort by mean accuracy and plot it against k.
+We go much deeper into MLflow Tracking in Week 8.
+
+---
+class: spacious, fit
+# Try it 1: Beat the Held-out Set (15 min, pairs)
+
+`lab.ipynb`, section "EXERCISE (Try it 1)"
+
+1. Use **only** the development data (`X_dev`, `y_dev`) and cross-validation to pick a kNN:
+   `n_neighbors`, `weights`, `p`
+2. **Write down your CV estimate** before looking at the held-out set
+3. Evaluate once on the held-out set; the run is logged to MLflow
+4. Compare: how far was your estimate off? Did the best CV score win on the held-out set?
+
+???
+This is a small competition. Pairs tune on the development set only; I collect the CV estimates on the board
+before anyone runs the held-out cell. Then we compare: usually the pair with the highest CV score does not win,
+because differences between reasonable configurations are about one percentage point, smaller than the fold-to-fold spread,
+and the held-out set has only 171 samples. Point out that the best score of a large search is optimistic,
+which is the validation-set overfitting from earlier. If someone finds that scaling the features helps a lot, great:
+that is next week's topic.
+
+---
+class: spacious
+# Nested Cross-Validation
+
+- Replace outer split by CV loop
+- Doesn't yield single model
+(inner loop might have different best parameter settings)
+- Expensive; used to estimate the performance of the whole tuning procedure
+
+```python
+grid = GridSearchCV(KNeighborsClassifier(), param_grid, cv=5)
+scores = cross_val_score(grid, X, y, cv=5)   # outer loop
+```
+
+???
+We can also replace the outer train/test split with cross-validation. That is nested cross-validation:
+the inner loop selects parameters, the outer loop evaluates the whole selection procedure.
+In scikit-learn this is just passing a `GridSearchCV` object to `cross_val_score`.
+It does not give you one final model, since each outer fold may choose different parameters,
+and it multiplies the cost by the number of outer folds.
+It is most useful when comparing modeling approaches; we treat it properly in Week 8.
+
+---
+class: center, middle
+# Cross-Validation Strategies
+
+???
+So far I said "k-fold" as if there were only one way to split. The splitter is a modeling decision:
+it has to reproduce the situation the model will face after deployment.
+We go from the i.i.d. case to grouped data and data ordered in time.
+
+---
+.center[
+![:scale 90%](images/kfold_cv.png)
+]
+
+???
+This visualization shows one column per CV iteration; red is the test fold and blue the training set.
+The left column shows the class of each sample. Here the data is sorted by class,
+and plain `KFold` without shuffling takes contiguous blocks.
+What problem do you see in the first and last folds?
+
+---
+class: compact
+.center[
+![:scale 90%](images/stratified_cv.png)
+]
+.smallest[
+Stratified:
+Ensure relative class frequencies in each fold reflect relative class
+frequencies on the whole dataset.]
+
+???
+With plain `KFold` on sorted data, some test folds contain only one class, and the rare class
+may be missing from a training set entirely.
+`StratifiedKFold` makes each fold's class proportions match the whole dataset.
+This matters most with imbalanced classes, where a rare class could otherwise be absent from some folds.
+It also reduces the variance of the estimate, as the next slide shows.
+
+---
+class: fit
+# Importance of Stratification
+.smaller[
+```python
+y.value_counts()
+```
+```
+0    60
+1    40
+```
+```python
+from sklearn.model_selection import cross_val_score, KFold, StratifiedKFold
+from sklearn.dummy import DummyClassifier
+
+dc = DummyClassifier(strategy='most_frequent')
+skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+res = cross_val_score(dc, X, y, cv=skf)
+res.mean(), res.std()
+```
+```
+(0.6, 0.0)
+```
+```python
+kf = KFold(n_splits=5, shuffle=True, random_state=0)
+res = cross_val_score(dc, X, y, cv=kf)
+res.mean(), res.std()
+```
+```
+(0.6, 0.138)
+```
+]
+
+???
+A dataset with 60% class 0, and a dummy classifier that always predicts the majority class.
+Its true accuracy is 60%. With stratified folds, every fold reports exactly 0.6.
+With shuffled KFold, the class balance varies between folds and the fold scores spread out,
+with a standard deviation of almost 14 points, purely from how the split happened to fall.
+This spread is noise in the evaluation, not in the model.
+
+---
+class: spacious
+# Repeated KFold and LeaveOneOut
+
+- LeaveOneOut : `KFold(n_splits=n_samples)` <br />
+High variance, takes a long time <br />
+.tiny[(see [Raschka](https://arxiv.org/pdf/1811.12808.pdf) for a review and [Varoquaux](https://hal.inria.fr/hal-01545002/file/paper.pdf) for empirical evaluation)]
+
+- Better: ShuffleSplit (aka Monte Carlo) <br />
+Repeatedly draw a random train/test split
+
+- Even Better: RepeatedKFold. <br />
+Apply KFold or StratifiedKFold multiple times with shuffled data.
+
+???
+The extreme of k-fold is leave-one-out: one sample per test fold. It is expensive, and because the
+training sets overlap almost completely, the estimate has high variance.
+ShuffleSplit draws independent random splits; test sets of different iterations can overlap.
+Repeated k-fold runs k-fold several times with different shuffles and averages over everything.
+The two references are good reading if you want the evidence behind these recommendations.
+
+---
+class: compact
+.center[
+![:scale 100%](images/shuffle_split_cv.png)
+]
+.smaller[Number of iterations and test set size independent]
+???
+In ShuffleSplit you choose the number of iterations and the train and test sizes independently.
+That lets you run many iterations with reasonably large test sets.
+It is also handy on very large datasets: set `train_size` small to get fast, subsampled estimates.
+There is a `StratifiedShuffleSplit` variant for classification.
+
+---
+class: compact
+.center[
+![:scale 100%](images/repeated_stratified_kfold.png)
+]
+.smaller[
+Potentially less variance than StratifiedShuffleSplit.<br />
+Five times five fold or at most ten times ten fold is sufficient.
+]
+???
+`RepeatedStratifiedKFold` runs stratified k-fold several times with different shuffles;
+the boxes show the three repetitions. Within each repetition, every sample is tested exactly once.
+In practice 5x5 or at most 10x10 is plenty. Keep in mind that repeating does not create new data:
+the scores are correlated, so do not treat 50 scores as 50 independent measurements.
+
+---
+class: spacious
+# Defaults in scikit-learn
+
+- `cv=5` by default (5-fold)
+- For classifiers, integer `cv` means **stratified** k-fold
+- `train_test_split` has a stratify option:
+`train_test_split(X, y, stratify=y)`
+- **No shuffle** by default in KFold / StratifiedKFold
+- Set `random_state` whenever you shuffle
+
+???
+If you pass nothing or an integer to `cv`, scikit-learn uses 5-fold, and for classifiers it is stratified.
+`train_test_split` is not stratified by default; passing `stratify=y` is almost always a good idea for classification.
+The k-fold splitters do not shuffle by default, so running cross-validation twice gives identical results;
+if your data is sorted, pass a splitter with `shuffle=True`.
+And set `random_state` so that your results are reproducible and your MLflow runs are comparable.
+
+---
+class: center, middle
+# Cross-Validation with non-i.i.d. data
+
+???
+Everything so far assumed i.i.d. samples. Real data often violates this:
+several measurements from the same patient, many transactions from the same customer,
+observations that are close in time or space. In those cases a random split leaks information,
+and the estimate is too optimistic.
+
+---
+# Grouped Data
+### Assume we have data (medical, product, user...) from 5 cities
+- Istanbul, Ankara, Izmir, Bursa, Antalya.
+
+We can assume data within a city is more correlated than between cities.
+
+### Usage Scenarios
+- Assume all future users will be in one of these cities: i.i.d.
+- Assume we want to generalize to predict for a new city: not i.i.d.
+
+???
+Whether you need group-aware splitting depends on the deployment question, not just on the data.
+If the product will only ever be used in these five cities, a random split is fine.
+If you want to launch in a sixth city, the test set must contain cities the model has never seen.
+The same holds for multiple measurements per patient, or several images of the same object.
+Ask yourself: what is the unit I want to generalize to?
+
+---
+class: fit
+![:scale 100%](images/group_kfold.png)
+
+???
+`GroupKFold` takes a `groups` array, for example a patient ID, and guarantees that all samples of a group
+are either in the training set or in the test set, never split across both.
+The leftmost column shows the groups: each test fold consists of whole groups.
+Other group-aware splitters are `LeaveOneGroupOut`, `GroupShuffleSplit`, and `StratifiedGroupKFold`,
+which also balances classes.
+
+---
+# GroupKFold in Code
+
+.smaller[
+```python
+# 20 patients x 30 measurements; label = the patient's diagnosis
+from sklearn.model_selection import GroupKFold, KFold, cross_val_score
+
+knn = KNeighborsClassifier(n_neighbors=5)
+kf = cross_val_score(knn, X, y, cv=KFold(5, shuffle=True, random_state=0))
+gkf = cross_val_score(knn, X, y, groups=patient_id, cv=GroupKFold(5))
+print(f"KFold      accuracy: {kf.mean():.2f}")
+print(f"GroupKFold accuracy: {gkf.mean():.2f}")
+```
+```
+KFold      accuracy: 0.99
+GroupKFold accuracy: 0.45
+```
+]
+
+???
+This is the simulated patient example from the lab. With a random split, the test set contains
+measurements of patients whose other measurements are in the training set, and kNN simply recognizes the patient: 99%.
+With GroupKFold, we ask the real question, whether we can diagnose a new patient, and the answer is chance level.
+Neither number is "wrong", but only one of them answers the question we care about.
+Note that `groups` is passed to `cross_val_score`, not to the splitter's constructor.
+
+---
+class: center
+# Correlations in time (and/or space)
+
+![:scale 70%](images/time_series1.png)
+
+???
+The second common violation is time. This is the bike-sharing series from the opening slide:
+daily rentals in Washington D.C., 2011 and 2012, with strong yearly seasonality and growth from the first year to the second.
+It is not always obvious that a dataset has a time component: almost all data is collected over time,
+and the process generating it can drift.
+
+---
+class: center
+# Correlations in time (and/or space)
+
+![:scale 70%](images/time_series2.png)
+
+???
+A random test set picks days scattered over the whole period. Each test day has training days right
+before and after it, so predicting it is interpolation, and neighboring days are highly correlated.
+The estimate you get this way is much better than what you will see in production.
+
+---
+class: center
+# Correlations in time (and/or space)
+
+![:scale 70%](images/time_series3.png)
+
+???
+In deployment, you train on the past and predict the future. The test set should reflect that:
+a block at the end of the series, after all training data.
+This is extrapolation, and it is harder, which is exactly why we need to measure it.
+
+---
+class: fit
+![:scale 100%](images/time_series_cv.png)
+
+???
+`TimeSeriesSplit` turns this into cross-validation. Each split trains on all data up to some point
+and tests on the next block. Training sets grow over the iterations and always precede the test set.
+Unlike k-fold, the data is not shuffled and not every sample is tested; the first block is only ever used for training.
+
+---
+class: fit
+![:scale 100%](images/time_series_walk_forward_cv.png)
+
+???
+With `max_train_size`, the training window has fixed length and slides forward: walk-forward validation.
+This is useful when old data is less relevant because the process changes over time.
+Whether a growing or a sliding window works better is itself something you can validate.
+
+---
+# TimeSeriesSplit in Code
+
+.smaller[
+```python
+from sklearn.model_selection import TimeSeriesSplit
+# bike sharing (OpenML 42712), daily totals 2011-2012
+# X: rentals of the last 7 days (lag features), y: rentals today, rows sorted by date
+reg = KNeighborsRegressor(n_neighbors=5)
+for name, cv in [("KFold(shuffle=True)", KFold(5, shuffle=True, random_state=0)),
+                 ("TimeSeriesSplit", TimeSeriesSplit(5))]:
+    scores = cross_val_score(reg, X, y, cv=cv, scoring="r2")
+    print(f"{name:20s} mean R^2 = {scores.mean():.2f}")
+```
+```
+KFold(shuffle=True)  mean R^2 = 0.71
+TimeSeriesSplit      mean R^2 = -0.14
+```
+
+`TimeSeriesSplit(n_splits=5, max_train_size=None, test_size=None, gap=0)`
+]
+
+???
+This is the opening case. Shuffled KFold reports an R squared of 0.71; TimeSeriesSplit gives minus 0.14,
+worse than predicting the mean of each test block. The shuffled estimate lets the model train on days after the test day.
+The honest estimate also reveals a real weakness: kNN cannot extrapolate the growth from 2011 to 2012
+to values it has never seen, and early folds have not yet seen a full year of seasons.
+The `gap` argument drops samples between training and test, which you need when the forecast horizon
+is longer than one step or when features are built from overlapping windows.
+Week 11 builds on this for forecasting.
+
+---
+class: spacious, fit
+# Try it 2: Which Splitter? (15 min)
+
+`lab.ipynb`, section "EXERCISE (Try it 2)": hourly bike rentals with calendar and weather features
+
+1. **Predict first**: which gives the higher $R^2$, shuffled `KFold` or `TimeSeriesSplit`, and by how much?
+2. Run it. Which number would you report to the operator?
+3. Add `TimeSeriesSplit(5, gap=24)` and a `max_train_size` window. What changes and why?
+4. Bonus: drop the `year` feature. Which score moves more?
+
+???
+Collect predictions by show of hands before anyone runs the cell; most people underestimate the gap.
+Expected result: about 0.71 for shuffled KFold and 0.45 for TimeSeriesSplit on the hourly data.
+The gap parameter changes little here because the features do not use past target values;
+it matters once features are lags or rolling windows, as in Week 11.
+Dropping `year` changes little because on unscaled features kNN distances are dominated by `hour`, `month` and `temp`,
+which leads into scaling next week.
+
+---
+# Using Cross-Validation Generators
+
+.tiny[
+```python
+from sklearn.model_selection import KFold, StratifiedKFold, ShuffleSplit, RepeatedStratifiedKFold
+kfold = KFold(n_splits=5)
+skfold = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+ss = ShuffleSplit(n_splits=20, train_size=.4, test_size=.3, random_state=0)
+rs = RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=0)
+
+print("KFold:\n", cross_val_score(KNeighborsClassifier(), X, y, cv=kfold))
+print("StratifiedKFold:\n", cross_val_score(KNeighborsClassifier(), X, y, cv=skfold))
+print("ShuffleSplit:\n", cross_val_score(KNeighborsClassifier(), X, y, cv=ss))
+print("RepeatedStratifiedKFold:\n", cross_val_score(KNeighborsClassifier(), X, y, cv=rs))
+```
+
+```
+KFold:
+ [0.86 0.92 0.96 0.95 0.94]
+StratifiedKFold:
+ [0.92 0.94 0.92 0.91 0.96]
+ShuffleSplit:
+ [0.96 0.92 0.9  0.91 0.94 0.92 0.93 0.89 0.95 0.95 0.91 0.94 0.93 0.94
+ 0.93 0.97 0.91 0.93 0.94 0.92]
+RepeatedStratifiedKFold:
+ [0.92 0.94 0.92 0.91 0.96 0.96 0.95 0.92 0.91 0.95 0.95 0.96 0.92 0.92
+ 0.91 0.91 0.95 0.92 0.91 0.96 0.92 0.94 0.92 0.95 0.92 0.91 0.95 0.96
+ 0.94 0.93 0.91 0.92 0.94 0.93 0.91 0.93 0.93 0.89 0.95 0.94 0.94 0.96
+ 0.92 0.94 0.91 0.95 0.88 0.91 0.95 0.93]
+```
+]
+???
+All splitters share one interface: you pass the splitter object as the `cv` argument instead of an integer.
+The same works for `GridSearchCV` and `cross_validate`.
+Look at the range of the individual scores on the breast cancer data: from about 0.86 to 0.97
+for the same model. A single train/test split would have given you one of these numbers.
+
+---
+# cross_validate function
+.smaller[
+```python
+from sklearn.model_selection import cross_validate
+res = cross_validate(KNeighborsClassifier(), X, y, return_train_score=True,
+                     scoring=["accuracy", "roc_auc"])
+res_df = pd.DataFrame(res)
+res_df.round(3)
+```
+
+```
+   fit_time  score_time  test_accuracy  train_accuracy  test_roc_auc  train_roc_auc
+0       0.0       0.004          0.886           0.952         0.946          0.992
+1       0.0       0.004          0.939           0.952         0.953          0.992
+2       0.0       0.003          0.939           0.947         0.981          0.991
+3       0.0       0.003          0.947           0.938         0.963          0.990
+4       0.0       0.003          0.929           0.947         0.955          0.992
+```
+]
+???
+`cross_validate` is the more general version of `cross_val_score`. It can compute several metrics
+at once, return training scores, and report fit and score times.
+ROC AUC is one of the metrics we cover in Week 7; for now, note that you can ask for any number of scorers.
+The gap between training and test scores is the overfitting signal from the beginning of the lecture.
+
+---
+# What Goes Wrong in Practice
+
+.smaller[
+- **Tuning on the test set**: trying "just a few" models on the test set and reporting the best
+- **Reporting the best CV score** of a large search as the expected performance
+- **Random splits of grouped data**: several images per patient, several sessions per user, near-duplicate rows
+- **Random splits of time-ordered data**: fraud, demand, sensor data, anything that drifts
+- **Preprocessing before splitting**: scaling, feature selection or imputation fitted on all data (Week 3)
+- **Unstable conclusions**: one split, no `random_state`, no spread reported
+]
+
+???
+These are the failures I see most often, in student projects and in published work. Medical imaging is a
+well-known example: when images of the same patient end up in both training and test sets, reported accuracy
+can be far above what the model achieves on new patients. Each item on this list inflates the estimate,
+and none of them produces an error message; the code runs and the number looks good.
+Ask the class: which of these would a reviewer be able to detect from the paper alone? Usually none,
+which is why you must state your validation scheme explicitly.
+
+---
+# Choosing a Splitter
+
+| Data situation | Splitter |
+|---|---|
+| i.i.d. regression | `KFold(shuffle=True)`, `RepeatedKFold` |
+| i.i.d. classification, esp. imbalanced | `StratifiedKFold`, `RepeatedStratifiedKFold` |
+| Very large data, quick estimates | `ShuffleSplit`, `StratifiedShuffleSplit` |
+| Repeated measurements (patients, users, cities) | `GroupKFold`, `StratifiedGroupKFold`, `LeaveOneGroupOut` |
+| Ordered in time, forecasting | `TimeSeriesSplit` (with `gap`, `max_train_size`) |
+
+Rule: the split must mimic how the model will be used.
+
+???
+Here is the summary to take home. The question is always: what will the model see after deployment,
+and does my validation split reproduce that?
+If both groups and time are present, time usually takes priority, and you may need a custom split.
+In your homework and project, state and justify the splitter you use, and log it to MLflow with the results.
+Next week we look at preprocessing and pipelines, and at data leakage, which is the other main way evaluations go wrong.
+
+---
+class: middle
+
+# Questions ?
+
+???
+Before we stop: for your own project dataset, what is the unit you want to generalize to,
+and which splitter matches it? Bring an answer to that next week.
+Finish both exercises in `lab.ipynb`, and open the MLflow UI (`uv run mlflow ui`) to look at the k sweep.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (6 slides); they are not needed for the homework or the project.
+
+---
+class: center, fit
+
+# Influence of Number of Neighbors
+
+![:scale 50%](images/knn_boundary_k3.png)
+
+???
+With three neighbors, the predictions for these points change.
+So the number of neighbors matters a lot, but what is the right value?
+This is our first hyper-parameter: a setting that is not learned by `fit`
+and has to be chosen some other way. Most of today is about how to choose it honestly.
+
+---
+# Computational Properties
+.left-column[
+## Naive
+- fit: no time
+- memory: O(n * p)
+- predict: O(n * p)
+]
+.right-column[
+## Kd-tree
+- fit: O(p * n log n)
+- memory: O(n * p)
+- predict:
+- O(k * log(n))<br />
+  FOR FIXED p!
+]
+.reset-column[
+n=n_samples
+p=n_features
+]
+
+???
+A kd-tree or ball tree partitions the space at fit time, which costs about n log n,
+and can make queries logarithmic in n. The catch is the "for fixed p": in high dimensions
+these structures degrade toward brute force. scikit-learn chooses automatically with `algorithm='auto'`.
+For very large datasets, approximate nearest neighbor libraries are the usual answer.
+
+---
+class: center, fit
+# Overfitting the validation set
+
+![:scale 80%](images/overfitting_validation_set_2.png)
+
+???
+The validation curve is the true curve plus noise, because the validation set is a finite sample.
+With a small validation set, that noise can be several percentage points.
+
+---
+class: center, fit
+# Overfitting the validation set
+
+![:scale 80%](images/overfitting_validation_set_3.png)
+
+???
+We pick the hyper-parameter with the maximum validation accuracy.
+Taking the maximum of noisy values selects a point where the noise happened to be positive,
+so the validation score at the optimum overestimates the true accuracy there.
+
+---
+class: center, fit
+# Overfitting the validation set
+
+![:scale 80%](images/overfitting_validation_set_4.png)
+
+???
+An independent test set has independent noise, so its score at the chosen point is unbiased,
+and typically lower than the validation score. This is why we report the test score, not the best validation score.
+The more configurations you try, the larger this gap tends to be; keep that in mind for Week 8,
+when we search over hundreds of configurations.
+
+---
+class: compact
+
+# GridSearchCV Results
+.tiny[
+```python
+import pandas as pd
+results = pd.DataFrame(grid.cv_results_)
+results.columns
+```
+```
+Index(['mean_fit_time', 'std_fit_time', 'mean_score_time', 'std_score_time',
+       'param_n_neighbors', 'params', 'split0_test_score', 'split1_test_score',
+       ...
+       'split9_test_score', 'mean_test_score', 'std_test_score', 'rank_test_score',
+       'split0_train_score', ..., 'split9_train_score',
+       'mean_train_score', 'std_train_score'])
+```
+
+```python
+results.params.head(7)
+```
+```
+0     {'n_neighbors': 1}
+1     {'n_neighbors': 3}
+2     {'n_neighbors': 5}
+3     {'n_neighbors': 7}
+4     {'n_neighbors': 9}
+5    {'n_neighbors': 11}
+6    {'n_neighbors': 13}
+Name: params, dtype: object
+```
+]
+
+???
+`cv_results_` stores everything the search computed. It is a dictionary, and the easiest way to
+inspect it is as a pandas DataFrame, with one row per parameter setting.
+There are fit and score times, the score for every split, and means and standard deviations.
+Training scores only appear because we passed `return_train_score=True`.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'github',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "student_id": null,
+  "horizon_hours": null,
+  "weather_policy": null,
+  "oracle_gap_mae": null,
+  "baseline_val_mae": null,
+  "champion_val_mae": null,
+  "drifted_features": null,
+  "fault_start": null,
+  "champion_version": null,
+  "challenger_version": null,
+  "promoted": null,
+  "champion_mae_fresh": null,
+  "challenger_mae_fresh": null,
+  "challenger_minus_champion_ci": null,
+  "memo": {
+    "decision": null,
+    "main_risk": null,
+    "action_on_fault": null,
+    "justification": ""
+  }
+}

@@ -1,0 +1,1811 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 3: Preprocessing, Feature Engineering & Data Leakage</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 3: Preprocessing, Feature Engineering & Data Leakage
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is about everything that happens between the raw table and the model:
+scaling, encoding categorical variables, transforming distributions, and
+wrapping all of it in pipelines. The second half is about data leakage,
+which is the most common reason a model looks good in evaluation and fails
+in use. Everything we do today is also in lab.ipynb for this week.
+
+---
+class: middle
+
+# What is this house worth?
+
+- King County (Seattle area), 21,613 sales between May 2014 and May 2015
+- 17 numeric features, a ZIP code, a sale date, and the price
+- Real stakes: automated valuation models price homes for lenders, tax offices and buyers,
+  and a few percent of error on a house is a lot of money (we return to what can go wrong in Week 12)
+
+--
+
+Today's questions:
+- Which features need rescaling, re-encoding, or transforming?
+- How do we do this without fooling ourselves in evaluation?
+
+???
+I want to anchor today in one concrete problem: predicting the sale price of
+a house. Automated valuation is a large industry, and getting it wrong is
+expensive; we will look at a famous failure in Week 12.
+Ask the class: if you had this table, what would you do before fitting any model?
+Collect a few answers; most of them will be preprocessing steps we cover today.
+
+---
+class: middle
+
+![:scale 90%](images/house_price_scatter.png)
+
+???
+Here is each feature plotted against the price. Look at the ranges on the x axes:
+bedrooms go up to about 10, sqft_lot goes up to a million, latitude varies in
+the second decimal. Some features are really categorical (waterfront, view),
+some are skewed (sqft_lot), and yr_renovated uses 0 for "never". Ask: which of
+these would confuse a distance-based model?
+
+---
+class: center, middle
+
+# Scaling
+
+???
+We start with the simplest preprocessing step, putting features on comparable scales.
+
+---
+class: center, middle
+
+.center[
+![:scale 70%](images/house_price_boxplot.png)
+]
+
+???
+This box plot uses a log axis; the features differ by up to six orders of
+magnitude. Many models care about this. For k-nearest neighbors, a difference of
+1,000 in sqft_lot dominates any difference in bedrooms. For penalized linear models,
+the same penalty applied to coefficients on very different scales means very
+different amounts of regularization per feature. We also see strongly
+non-Gaussian distributions, which we come back to later today.
+
+---
+# Scaling and Distances
+
+![:scale 90%](images/knn_scaling.png)
+
+???
+A toy example with two classes in two dimensions. The two scatter plots look
+identical, but on the left the x axis is about a thousand times larger than the
+y axis. On the right I used StandardScaler, so both features have zero mean and unit
+variance. Ask the class to predict what k nearest neighbors will do on each side.
+
+---
+# Scaling and Distances
+
+![:scale 90%](images/knn_scaling2.png)
+
+???
+On the left only distances along x matter, so the classifier ignores y, which is
+the informative feature. The scale of a feature is usually arbitrary, meters
+versus kilometers, so letting it decide the model is not what we want. For linear
+models with a penalty, different scales mean different effective penalties per feature.
+
+---
+class: center
+
+# Ways to Scale Data
+<br />
+![:scale 80%](images/scaler_comparison_scatter.png)
+???
+Four common options. StandardScaler subtracts the mean and divides by the standard
+deviation; it does not bound the range. MinMaxScaler maps each feature to [0, 1];
+it makes sense for features with natural bounds, such as pixel intensities, and is
+sensitive to a single extreme value. RobustScaler uses the median and interquartile
+range, so outliers do not distort it. Normalizer is different: it works per sample,
+rescaling each row to unit norm, which is useful for count or frequency vectors,
+not as a general-purpose scaler.
+
+---
+# Standard Scaler Example
+
+```python
+from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
+X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=0)
+
+scaler = StandardScaler()
+scaler.fit(X_train)
+X_train_scaled = scaler.transform(X_train)
+
+ridge = Ridge().fit(X_train_scaled, y_train)
+X_test_scaled = scaler.transform(X_test)
+ridge.score(X_test_scaled, y_test)
+```
+```
+0.684
+```
+
+???
+Transformers share the fit interface with models, but have transform instead of
+predict. fit computes the mean and standard deviation on the training set;
+transform applies them. The key point: the test set is transformed with the
+training-set statistics. We never call fit on the test set. The R² of 0.68 is our
+baseline for a linear model without the ZIP code.
+
+---
+class: center, middle
+
+.center[
+![:scale 100%](images/no_separate_scaling.png)
+]
+
+???
+Why fit only on the training data? Left is the original data. In the middle I fit
+MinMaxScaler on the training set and applied it to both sets: the picture is
+unchanged, only the axes moved, and test points can fall outside [0, 1]. On the
+right I fit a second scaler on the test set: now the test points are shifted
+relative to the training points, and the model sees a distorted version of them.
+A new single sample would not even have a meaningful min and max.
+
+---
+class: center, middle, fit2
+
+# scikit-learn API Summary
+
+![:scale 90%](images/api-table.png)
+
+Efficient shortcuts:
+
+```python
+est.fit_transform(X) == est.fit(X).transform(X)  # mostly
+est.fit_predict(X) == est.fit(X).predict(X)   # mostly
+```
+
+???
+All estimators have fit; supervised ones also take y. predict produces a target;
+transform produces a new representation of X, which covers scaling, encoding,
+feature extraction and feature selection. fit_transform can be more efficient than
+calling both. The "mostly" matters: we will see today that TargetEncoder.fit_transform
+deliberately returns something different from fit followed by transform.
+
+---
+class: smaller, compact
+
+```python
+from sklearn.model_selection import cross_val_score
+from sklearn.linear_model import RidgeCV
+from sklearn.neighbors import KNeighborsRegressor
+for name, est, XX in [("RidgeCV, raw", RidgeCV(), X_train),
+                      ("RidgeCV, scaled", RidgeCV(), X_train_scaled),
+                      ("kNN, raw", KNeighborsRegressor(), X_train),
+                      ("kNN, scaled", KNeighborsRegressor(), X_train_scaled)]:
+    scores = cross_val_score(est, XX, y_train, cv=10)
+    print(f"{name:16s} {scores.mean():.3f} +- {scores.std():.3f}")
+```
+
+```
+RidgeCV, raw     0.694 +- 0.027
+RidgeCV, scaled  0.694 +- 0.027
+kNN, raw         0.500 +- 0.039
+kNN, scaled      0.786 +- 0.029
+```
+
+???
+Ten-fold cross-validation on the training set. For RidgeCV scaling makes no
+difference here, because the selected alpha is small relative to the data; with
+stronger regularization it would. For kNN the difference is large, 0.50 versus 0.79,
+because without scaling sqft_lot dominates every distance.
+There is a problem with how I ran this experiment. Can you see it? Keep it in mind
+for a few slides.
+
+---
+class: middle
+
+# Try it 1: predict first, then run (10 min)
+
+Three models, each with and without `StandardScaler`:
+`KNeighborsRegressor`, `RidgeCV`, `HistGradientBoostingRegressor`.
+
+1. On paper: will scaling help, hurt, or not matter for each?
+2. Run the six pipelines in `lab.ipynb` (section "Try it 1").
+3. Which model families are invariant to feature scaling, and why?
+
+???
+Give them two minutes to commit to predictions before running anything; writing
+the prediction down is the point. The expected result: kNN improves a lot, RidgeCV
+barely changes here, and gradient boosting gives identical scores because tree
+splits are invariant to monotone per-feature transformations. Ask a follow-up:
+would the answer for Ridge change with a large alpha? Yes, and that is Week 4 material.
+
+---
+class: center, middle
+
+# A note on preprocessing
+# (and pipelines)
+
+???
+Now the problem with the previous experiment, and the tool that fixes it.
+
+---
+class: smallest, compact
+# A common error
+```python
+rnd = np.random.RandomState(seed=0)
+X, y = rnd.normal(size=(100, 10000)), rnd.normal(size=100)  # pure noise
+X_test, y_test = rnd.normal(size=(100, 10000)), rnd.normal(size=100)
+```
+
+```python
+# select most informative 5% of features
+from sklearn.feature_selection import SelectPercentile, f_regression
+select = SelectPercentile(score_func=f_regression, percentile=5)
+select.fit(X, y)
+X_selected = select.transform(X)
+print(X_selected.shape)
+```
+```
+(100, 500)
+```
+
+```python
+np.mean(cross_val_score(Ridge(), X_selected, y, cv=5))
+```
+```
+0.91
+```
+
+```python
+ridge = Ridge().fit(X_selected, y)
+ridge.score(select.transform(X_test), y_test)
+```
+```
+-0.10
+```
+
+???
+The data is pure noise: 10,000 random features and a random target. Nothing can be
+predicted. Yet cross-validation reports R² of 0.91. On fresh data the model scores
+below zero. Ask the class where the 0.91 comes from before moving on. The answer:
+the 500 features were chosen using all 100 samples, including the ones that later
+serve as validation folds, so the selection already "knows" the validation targets.
+
+---
+class: smallest
+
+# Leaking Information
+
+.left-column[
+```python
+# BAD!
+select.fit(X, y)  # includes the cv test parts!
+X_sel = select.transform(X)
+scores = []
+for train, test in cv.split(X, y):
+    ridge = Ridge().fit(X_sel[train], y[train])
+    score = ridge.score(X_sel[test], y[test])
+    scores.append(score)
+```
+]
+.right-column[
+```python
+# GOOD!
+scores = []
+for train, test in cv.split(X, y):
+    select.fit(X[train], y[train])
+    X_sel_train = select.transform(X[train])
+    ridge = Ridge().fit(X_sel_train, y[train])
+    X_sel_test = select.transform(X[test])
+    score = ridge.score(X_sel_test, y[test])
+    scores.append(score)
+```
+]
+
+.reset-column[
+Every step that learns from data belongs inside the cross-validation loop.
+]
+
+???
+On the left, selection is fit once on everything and cross-validation only wraps
+the model. On the right, selection is refit in each fold using only the training
+part. The same applies to the scaling experiment two slides ago: I fit the scaler
+on all of X_train and then cross-validated, so each validation fold contributed to
+the mean and standard deviation. For scaling the bias is small; for feature
+selection or target encoding it can be enormous. The rule is the same either way.
+
+---
+class: some-space
+
+# Leaking Information
+
+.left-column[
+Information leak
+![:scale 100%](images/information_leak_preprocessing.png)
+]
+.right-column[
+No information leak
+![:scale 100%](images/no_information_leak_preprocessing.png)
+]
+
+.reset-column[
+Cross-validation must simulate the whole training procedure, preprocessing included.
+]
+
+???
+The same idea as a picture. On the left, the scaler is fit on training and validation
+folds together, but the model is evaluated on the validation fold as if it were new
+data. On the right, the scaler only sees the training folds, exactly as it will only
+see the training data when we later predict on the test set. Cross-validation should
+mimic deployment step by step.
+
+---
+class: smaller
+
+```python
+scaler = StandardScaler()
+scaler.fit(X_train)
+X_train_scaled = scaler.transform(X_train)
+ridge = Ridge().fit(X_train_scaled, y_train)
+
+X_test_scaled = scaler.transform(X_test)
+ridge.score(X_test_scaled, y_test)
+```
+```
+0.684
+```
+
+```python
+from sklearn.pipeline import make_pipeline
+pipe = make_pipeline(StandardScaler(), Ridge())
+pipe.fit(X_train, y_train)
+pipe.score(X_test, y_test)
+```
+```
+0.684
+```
+
+???
+The pipeline is the scikit-learn tool for this. At the top is the manual workflow
+from before. make_pipeline takes a sequence of estimators; all but the last must be
+transformers. The pipeline itself is an estimator: fit fits the scaler, transforms,
+and fits Ridge; score transforms the test data with the fitted scaler and evaluates.
+Same result, less code, and no way to accidentally fit the scaler on test data.
+
+---
+class: left, middle
+
+.center[
+![:scale 70%](images/pipeline.png)
+]
+
+???
+With three steps T1, T2 and a classifier: fit calls fit_transform on T1 to get X1,
+fit_transform on T2 to get X2, then fits the classifier on X2. predict on new data
+calls transform on T1, transform on T2, then predict. Only the fitted parameters of
+each step carry over to new data, which is exactly the behavior we want.
+
+---
+class: smallest
+# Undoing our feature selection mistake
+
+.left-column[
+```python
+# BAD!
+select.fit(X, y)  # includes the cv test parts!
+X_sel = select.transform(X)
+scores = []
+for train, test in cv.split(X, y):
+    ridge = Ridge().fit(X_sel[train], y[train])
+    score = ridge.score(X_sel[test], y[test])
+    scores.append(score)
+```
+Same as:
+
+```python
+select.fit(X, y)
+X_selected = select.transform(X)
+np.mean(cross_val_score(Ridge(), X_selected, y, cv=5))
+```
+
+```
+0.91
+```
+]
+.right-column[
+```python
+# GOOD!
+scores = []
+for train, test in cv.split(X, y):
+    select.fit(X[train], y[train])
+    X_sel_train = select.transform(X[train])
+    ridge = Ridge().fit(X_sel_train, y[train])
+    X_sel_test = select.transform(X[test])
+    score = ridge.score(X_sel_test, y[test])
+    scores.append(score)
+```
+Same as:
+
+```python
+pipe = make_pipeline(select, Ridge())
+np.mean(cross_val_score(pipe, X, y, cv=5))
+```
+```
+-0.25
+```
+]
+
+???
+Passing the pipeline to cross_val_score moves all fitting inside the loop. The honest
+estimate on noise is below zero, which matches what we saw on the held-out data.
+This is the single most important habit from today: give cross-validation the whole
+pipeline, never pre-transformed data.
+
+---
+# Naming Steps
+
+```python
+from sklearn.pipeline import make_pipeline
+knn_pipe = make_pipeline(StandardScaler(), KNeighborsRegressor())
+print(knn_pipe.steps)
+```
+```
+[('standardscaler', StandardScaler()),
+ ('kneighborsregressor', KNeighborsRegressor())]
+```
+
+```python
+from sklearn.pipeline import Pipeline
+pipe = Pipeline([("scaler", StandardScaler()),
+                 ("regressor", KNeighborsRegressor())])
+```
+
+???
+Every step has a name. make_pipeline generates it from the lowercased class name;
+the Pipeline class lets you choose names yourself as (name, estimator) tuples.
+You can access steps with pipe.named_steps["scaler"] or pipe[0]. The names matter
+as soon as we tune parameters.
+
+---
+# Pipeline and GridSearchCV
+.small-padding-top[
+```python
+from sklearn.model_selection import GridSearchCV
+
+knn_pipe = make_pipeline(StandardScaler(), KNeighborsRegressor())
+param_grid = {'kneighborsregressor__n_neighbors': range(1, 10)}
+grid = GridSearchCV(knn_pipe, param_grid, cv=10)
+grid.fit(X_train, y_train)
+print(grid.best_params_)
+print(grid.score(X_test, y_test))
+```
+
+```
+{'kneighborsregressor__n_neighbors': 8}
+0.778
+```
+]
+
+???
+Parameter names in a pipeline are step name, two underscores, parameter name.
+best_params_ uses the same format. Because the scaler lives inside the pipeline,
+the grid search refits it in every fold, so the search itself is leak-free.
+Tuning and nested cross-validation get their own treatment in Week 8.
+
+---
+# Going wild with Pipelines
+```python
+from sklearn.datasets import load_diabetes
+from sklearn.preprocessing import PolynomialFeatures
+diabetes = load_diabetes()
+X_train, X_test, y_train, y_test = train_test_split(
+    diabetes.data, diabetes.target, random_state=0)
+
+pipe = make_pipeline(StandardScaler(), PolynomialFeatures(), Ridge())
+param_grid = {'polynomialfeatures__degree': [1, 2, 3],
+              'ridge__alpha': [0.001, 0.01, 0.1, 1, 10, 100]}
+grid = GridSearchCV(pipe, param_grid=param_grid,
+                    n_jobs=-1, return_train_score=True)
+grid.fit(X_train, y_train)
+```
+```
+{'polynomialfeatures__degree': 1, 'ridge__alpha': 10}   test R^2: 0.358
+```
+
+???
+Any preprocessing parameter can be tuned jointly with the model. Here we search
+the polynomial degree and the Ridge penalty together on the diabetes data. The
+search picks degree 1: on 331 training samples, interaction features do not pay
+for their extra variance. This is a useful reminder that feature expansion is a
+hypothesis to test, not a default.
+
+---
+# Going wilder with Pipelines
+```python
+from sklearn.linear_model import Lasso
+pipe = Pipeline([('scaler', StandardScaler()),
+                 ('regressor', Ridge())])
+
+param_grid = {'scaler': [StandardScaler(), MinMaxScaler(),
+                         'passthrough'],
+              'regressor': [Ridge(), Lasso()],
+              'regressor__alpha': np.logspace(-3, 3, 7)}
+
+grid = GridSearchCV(pipe, param_grid)
+grid.fit(X_train, y_train)
+grid.score(X_test, y_test)
+```
+
+???
+Whole steps can be grid parameters. Here we search over three scaling options,
+where 'passthrough' means no scaling, and two regressors. Note that
+regressor__alpha refers to whichever regressor is currently plugged in, which works
+because Ridge and Lasso both have alpha.
+
+---
+# Keeping column names: `set_output`
+
+```python
+scaler = StandardScaler().set_output(transform="pandas")
+scaler.fit(X_train).transform(X_test).iloc[:3, :5]
+```
+```
+       bedrooms  bathrooms  sqft_living  sqft_lot    floors
+17384 -1.448419  -0.801701    -0.704248 -0.321932  2.769831
+722    0.667617   1.467506     2.799781  0.864530  0.925552
+2680  -1.448419  -1.774219    -0.693433 -0.273468 -0.918726
+```
+
+- Works on transformers, pipelines, and `ColumnTransformer`
+- Global switch: `sklearn.set_config(transform_output="pandas")`
+- `get_feature_names_out()` gives the names without converting
+
+???
+By default transformers return NumPy arrays and the column names are lost, which
+makes debugging and interpretation painful. set_output with transform="pandas" keeps
+DataFrames with meaningful column names all the way through a pipeline. One
+restriction: it cannot produce sparse output, so a OneHotEncoder inside needs
+sparse_output=False. I recommend it for exploration and for anything you want to
+inspect; for very wide sparse data keep the default.
+
+---
+class: left, middle
+
+# Categorical Variables
+
+???
+Now the second big topic: features that are not numbers.
+
+---
+# Categorical Variables
+.smaller[
+```python
+import pandas as pd
+df = pd.DataFrame({
+  'boro': ['Manhattan', 'Queens', 'Manhattan', 'Brooklyn', 'Brooklyn', 'Bronx'],
+  'salary': [103, 89, 142, 54, 63, 219],
+  'vegan': ['No', 'No','No','Yes', 'Yes', 'No']})
+```
+]
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro</th><th>salary</th><th>vegan</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>Manhattan</td><td>103</td><td>No</td></tr>
+    <tr><th>1</th><td>Queens</td><td>89</td><td>No</td></tr>
+    <tr><th>2</th><td>Manhattan</td><td>142</td><td>No</td></tr>
+    <tr><th>3</th><td>Brooklyn</td><td>54</td><td>Yes</td></tr>
+    <tr><th>4</th><td>Brooklyn</td><td>63</td><td>Yes</td></tr>
+    <tr><th>5</th><td>Bronx</td><td>219</td><td>No</td></tr>
+    </tbody>
+  </table>
+???
+A tiny example: a borough, a salary, and whether the person is vegan, which we treat
+as the target. Real data mixes continuous values, counts and categories; the ZIP code
+in our house data is a categorical feature stored as a number.
+scikit-learn estimators assume numeric input, so encoding categories is our job.
+Some libraries do it implicitly, which is convenient but hides decisions you should make.
+
+---
+# Ordinal encoding
+
+.smaller[
+```python
+df['boro_ordinal'] = df.boro.astype("category").cat.codes
+df
+```
+]
+.left-column[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro</th><th>salary</th><th>vegan</th><th>boro_ordinal</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>Manhattan</td><td>103</td><td>No</td><td>2</td></tr>
+    <tr><th>1</th><td>Queens</td><td>89</td><td>No</td><td>3</td></tr>
+    <tr><th>2</th><td>Manhattan</td><td>142</td><td>No</td><td>2</td></tr>
+    <tr><th>3</th><td>Brooklyn</td><td>54</td><td>Yes</td><td>1</td></tr>
+    <tr><th>4</th><td>Brooklyn</td><td>63</td><td>Yes</td><td>1</td></tr>
+    <tr><th>5</th><td>Bronx</td><td>219</td><td>No</td><td>0</td></tr>
+    </tbody>
+  </table>
+]
+
+--
+
+.right-column[
+![:scale 100%](images/boro_ordinal.png)
+]
+???
+The simplest encoding assigns an integer to each category, here in alphabetical order.
+That imposes an order and equal spacing that do not exist: Brooklyn is not "between"
+Bronx and Manhattan. For truly ordinal variables, such as the condition grade in
+the house data, this encoding is appropriate; for nominal ones it usually is not.
+
+---
+# One-Hot (Dummy) Encoding
+
+.narrow-left-column[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro</th><th>salary</th><th>vegan</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>Manhattan</td><td>103</td><td>No</td></tr>
+    <tr><th>1</th><td>Queens</td><td>89</td><td>No</td></tr>
+    <tr><th>2</th><td>Manhattan</td><td>142</td><td>No</td></tr>
+    <tr><th>3</th><td>Brooklyn</td><td>54</td><td>Yes</td></tr>
+    <tr><th>4</th><td>Brooklyn</td><td>63</td><td>Yes</td></tr>
+    <tr><th>5</th><td>Bronx</td><td>219</td><td>No</td></tr>
+    </tbody>
+  </table>
+]
+
+.wide-right-column[
+.tiny[
+```python
+pd.get_dummies(df, dtype=int)
+```
+<table border="1" class="dataframe" style="font-size:15px">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>salary</th><th>boro_Bronx</th><th>boro_Brooklyn</th><th>boro_Manhattan</th><th>boro_Queens</th><th>vegan_No</th><th>vegan_Yes</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>103</td><td>0</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>1</th><td>89</td><td>0</td><td>0</td><td>0</td><td>1</td><td>1</td><td>0</td></tr>
+    <tr><th>2</th><td>142</td><td>0</td><td>0</td><td>1</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>3</th><td>54</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+    <tr><th>4</th><td>63</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+    <tr><th>5</th><td>219</td><td>1</td><td>0</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    </tbody>
+  </table>
+]
+]
+???
+One-hot encoding creates one indicator column per category; exactly one is active
+per row. pd.get_dummies does this for every text or categorical column. Since
+pandas 2 the result is boolean by default, hence dtype=int here. Notice that it also
+encoded vegan, which is our target; get_dummies does not know which column is which.
+
+---
+# OneHotEncoder
+
+```python
+from sklearn.preprocessing import OneHotEncoder
+ohe = OneHotEncoder(sparse_output=False).set_output(transform="pandas")
+ohe.fit_transform(df[['boro', 'vegan']])
+```
+```
+   boro_Bronx  boro_Brooklyn  boro_Manhattan  boro_Queens  vegan_No  vegan_Yes
+0         0.0            0.0             1.0          0.0       1.0        0.0
+1         0.0            0.0             0.0          1.0       1.0        0.0
+2         0.0            0.0             1.0          0.0       1.0        0.0
+3         0.0            1.0             0.0          0.0       0.0        1.0
+4         0.0            1.0             0.0          0.0       0.0        1.0
+5         1.0            0.0             0.0          0.0       1.0        0.0
+```
+
+- `fit` learns the categories; `transform` always produces the same columns
+- Encodes every column it is given: use it on categorical columns only
+- Sparse output by default (`sparse_output=True`)
+
+???
+OneHotEncoder follows the fit/transform pattern: fit records the categories per
+column, transform maps any new data onto exactly those columns.
+get_feature_names_out, or set_output as here, tells you which column is which.
+It encodes every column it receives, including salary if you pass it, so we need a
+way to apply it only to some columns. That is the ColumnTransformer, two slides ahead.
+Contrast with pd.get_dummies, which learns nothing: on a second batch with different
+categories it silently produces columns that mean different things (worked example in Backup).
+
+---
+class: fit
+# Unknown and rare categories
+
+```python
+ohe = OneHotEncoder(handle_unknown="infrequent_if_exist", min_frequency=2,
+                    sparse_output=False)
+ohe.fit(df[['boro']])
+ohe.get_feature_names_out(), ohe.infrequent_categories_
+```
+```
+(['boro_Brooklyn', 'boro_Manhattan', 'boro_infrequent_sklearn'],
+ [array(['Bronx', 'Queens'])])
+```
+```python
+ohe.transform(pd.DataFrame({'boro': ['Manhattan', 'Staten Island', 'Queens']}))
+```
+```
+array([[0., 1., 0.],
+       [0., 0., 1.],     # unseen -> infrequent column
+       [0., 0., 1.]])
+```
+
+- `handle_unknown="error"` (default), `"ignore"` (all zeros), `"infrequent_if_exist"`
+- `min_frequency` / `max_categories` cap the number of columns
+
+???
+Two practical issues: categories that appear at prediction time but not in training,
+and categories so rare that their coefficients are pure noise. With min_frequency=2,
+Bronx and Queens, which occur once, are merged into an "infrequent" column, and
+handle_unknown="infrequent_if_exist" sends unseen categories such as Staten Island to
+the same column. max_categories caps the number of output columns instead. For
+high-cardinality features in production this is the default I recommend.
+
+---
+# OneHotEncoder + ColumnTransformer
+
+```python
+from sklearn.compose import make_column_transformer
+from sklearn.pipeline import make_pipeline
+from sklearn.linear_model import LogisticRegression
+
+numeric = df.select_dtypes(include="number").columns
+categorical = df.select_dtypes(exclude="number").columns
+
+preprocess = make_column_transformer(
+    (StandardScaler(), numeric),
+    (OneHotEncoder(handle_unknown="ignore"), categorical))
+
+model = make_pipeline(preprocess, LogisticRegression())
+```
+
+???
+ColumnTransformer applies different transformers to different subsets of columns
+and concatenates the results. Columns can be given by name, integer position,
+boolean mask, or a callable. I select by dtype here. A pandas 3 detail: text columns
+now have the "str" dtype instead of object, so older code that tests
+df.dtypes == object silently selects nothing; selecting on "number" works in both
+versions. The whole thing goes into a pipeline, so it is fit inside cross-validation.
+
+---
+class: center, middle
+![:scale 100%](images/column_transformer_schematic.png)
+???
+Here is the schematic. Each transformer gets its own subset of columns; subsets may
+overlap, and the same columns can be used by several transformers, for example a
+scaled copy and a PCA of the same numeric features. Columns that no transformer
+selects are dropped by default; remainder="passthrough" keeps them.
+
+---
+class: smaller, fit
+# ColumnTransformer: full syntax and column selectors
+
+```python
+from sklearn.compose import ColumnTransformer, make_column_selector
+
+preprocess = ColumnTransformer([
+    ("num", StandardScaler(), make_column_selector(dtype_include="number")),
+    ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+            make_column_selector(dtype_include=object)),
+], remainder="drop").set_output(transform="pandas")
+
+model = make_pipeline(preprocess, LogisticRegression())
+model.fit(df[['boro', 'salary']], df.vegan)
+```
+
+```python
+param_grid = {"columntransformer__cat__min_frequency": [None, 2],
+              "logisticregression__C": [0.1, 1, 10]}
+```
+
+- Parameter names: `<pipeline step>__<transformer name>__<parameter>`
+- `make_column_selector` resolves columns at `fit` time (by dtype or regex `pattern=`)
+
+???
+The ColumnTransformer class takes (name, transformer, columns) triples; the names are
+what you use in parameter grids. make_column_selector selects columns when fit is
+called, so the same pipeline works on any DataFrame with the right dtypes;
+pattern= selects by a regular expression on the column name.
+The grid key has three parts: "columntransformer" is the pipeline step created by
+make_pipeline, "cat" is the name we gave the transformer, then the parameter. With
+make_column_transformer the transformer would be named "onehotencoder" instead.
+When in doubt, call model.get_params().keys(). This lets us tune preprocessing
+choices, such as the rare-category threshold, with the same cross-validation as the model.
+
+---
+# Target Encoding (Impact Encoding)
+
+![:scale 100%](images/zip_code_prices.png)
+
+???
+Back to the house data. There are 70 ZIP codes, sorted here by median price, and the
+median ranges from about 250 thousand to almost 2 million dollars. Location is the
+most important price factor, so we want this information, but 70 one-hot columns
+for one feature is a lot, and with thousands of ZIP codes it would be impractical.
+
+---
+class: some-space
+# Target Encoding (Impact Encoding)
+- For high-cardinality categorical features
+- Replace each category by a statistic of the target in that category:
+  - Regression: mean target ("average price in this ZIP code")
+  - Binary classification: fraction of positives
+  - Multiclass: one column per class
+- Shrink toward the global mean for rare categories
+- The encoding uses `y`: it must be fit on training data only
+
+???
+Target encoding replaces a category by the average target value in that category,
+giving one informative column instead of many sparse ones. For rare categories the
+category mean is noisy, so it is shrunk toward the global mean, with more shrinkage
+for fewer samples. The crucial point: the encoding is computed from the target. If a
+row's own target contributes to its own encoded value, the model sees a noisy copy of
+the answer. That is leakage, and the next slide shows how scikit-learn prevents it.
+
+---
+class: smaller, fit
+# `TargetEncoder` and cross-fitting
+
+```python
+from sklearn.preprocessing import TargetEncoder
+te = TargetEncoder(target_type="continuous", cv=KFold(5, shuffle=True, random_state=0))
+ct = make_column_transformer((te, ["zipcode"]), remainder="passthrough")
+X_train_te = ct.fit_transform(X_train, y_train)   # cross-fitted
+X_test_te  = ct.transform(X_test)                 # full-training-set encoding
+```
+
+.left-column[
+- `fit_transform(X, y)`: each fold is encoded with statistics from the other folds
+- `transform(X)`: uses statistics from the whole training set
+- so `fit(X, y).transform(X)` ≠ `fit_transform(X, y)`
+- set `target_type="continuous"` for regression
+]
+.right-column[
+.tiny[
+```
+  zipcode   encoded   train mean
+0   98125  470230.0     470154.0
+1   98005  803606.0     804744.0
+2   98107  573870.0     573923.0
+3   98109  869053.0     875433.0
+4   98155  424224.0     424018.0
+```
+]
+]
+
+???
+scikit-learn's TargetEncoder, available since version 1.3, does cross-fitting inside
+fit_transform: the training data is split into folds and each fold is encoded using
+means computed on the other folds, so no row sees its own target. transform, used on
+the test set, applies the means from the full training set, shrunk toward the global
+mean; the table shows the encoded test values next to the raw training means.
+Two gotchas: prices are whole numbers, so without target_type="continuous" the target
+is detected as multiclass. And the shuffling is now controlled by passing a splitter to cv.
+
+---
+class: smallest
+# Using the ZIP code
+
+```python
+cv = KFold(5, shuffle=True, random_state=0)
+num_cols = make_column_selector(dtype_include="number")
+pipe_ohe = make_pipeline(make_column_transformer(
+    (OneHotEncoder(handle_unknown="ignore"), ["zipcode"]),
+    (StandardScaler(), num_cols)), Ridge())
+pipe_te = make_pipeline(make_column_transformer(
+    (TargetEncoder(target_type="continuous", cv=cv), ["zipcode"]),
+    (StandardScaler(), num_cols)), Ridge())
+```
+```
+no zipcode: 0.693
+one-hot:    0.805
+target enc: 0.786
+```
+
+- Both encodings add over 0.09 R²
+- With 70 levels and 21,613 rows, one-hot is affordable and slightly better here
+- Target encoding wins when levels are many and rows per level few
+
+???
+Adding the ZIP code improves R² from 0.69 to about 0.8 with either encoding. On this
+dataset one-hot is slightly better: 70 levels with around 300 sales each is easy for
+a regularized linear model. Target encoding compresses each ZIP code to one number, so
+the linear model cannot, for example, give it a different slope per region. Its
+advantage shows with thousands of levels or few rows per level, and with tree models.
+Do not take encoder rankings from one dataset as general rules.
+
+---
+class: middle
+
+# Feature Distributions
+
+???
+We have covered scale and type. The third property of features is their distribution.
+Standard scaling equalizes mean and variance but not shape: sqft_lot has an extreme right
+tail, waterfront is binary, yr_renovated is mostly zero. Linear models and neural networks
+tend to work better when features are roughly symmetric without extreme values.
+
+---
+# Power Transformations
+
+.left-column[
+$$bc_{\lambda}(x) = \cases{\frac{x^\lambda - 1}{\lambda} & \text{if } \lambda \neq 0\cr \log(x) & \text{if } \lambda = 0 }$$
+
+Box-Cox: only for positive x.
+
+Yeo-Johnson: any x (default).
+]
+
+.right-column[
+![:scale 90%](images/boxcox_lambda.png)
+]
+
+.reset-column[
+```python
+from sklearn.preprocessing import PowerTransformer
+pt = PowerTransformer(method="yeo-johnson")   # also standardizes by default
+pt.fit(X_train)
+```
+]
+???
+Box-Cox is a family of transformations indexed by lambda: lambda=1 is the identity
+up to a shift, 0 is the log, 0.5 behaves like a square root. For each feature, lambda
+is chosen by maximum likelihood so the transformed feature is as close to Gaussian as
+possible. Box-Cox needs strictly positive values; Yeo-Johnson extends it to zero and
+negative values and is the default. QuantileTransformer is a non-parametric alternative
+that maps to a uniform or normal distribution.
+
+---
+class: smaller
+.wide-left-column[![:scale 85%](images/house_price_bc_scaled_scatter.png)]
+.narrow-right-column[Features after the transform vs price]
+.clear-column[]
+
+```python
+for name, p in [("StandardScaler", make_pipeline(StandardScaler(), RidgeCV())),
+                ("PowerTransformer", make_pipeline(PowerTransformer(), RidgeCV())),
+                ("PowerTransformer + log(y)", TransformedTargetRegressor(
+                     make_pipeline(PowerTransformer(), RidgeCV()),
+                     func=np.log, inverse_func=np.exp))]:
+    cross_val_score(p, X_train, y_train, cv=KFold(5, shuffle=True, random_state=0))
+```
+```
+StandardScaler             R^2 = 0.697
+PowerTransformer           R^2 = 0.617
+PowerTransformer + log(y)  R^2 = 0.717
+```
+
+???
+A lesson in not assuming. Transforming only the features makes the Ridge model worse:
+the relationship between log-area and raw price is convex, and a linear model cannot
+follow it. The price itself is skewed; once we also model log-price, using
+TransformedTargetRegressor so the score is still computed on dollars, the model
+improves. Transform features and target together, and always check with cross-validation.
+
+---
+class: center, middle
+# Missing Values
+
+???
+So far today we built pipelines for scaling and categorical variables. One piece is still missing: real data has holes. Almost every dataset you will meet in your projects has missing values, and how we fill them is another preprocessing step that belongs inside the pipeline, which is exactly what sets up the leakage discussion that follows.
+
+---
+class: spacious
+
+# Dealing with missing values
+
+- Missing values can be encoded in many ways
+- NumPy has no dedicated missing value; the convention is `np.nan`. pandas has `pd.NA` and nullable dtypes
+- Sometimes: 999, ???, ?, np.inf, "N/A", "Unknown" …
+- Not discussing "missing output" - that's semi-supervised learning.
+- Often missingness is informative (use `MissingIndicator` or `SimpleImputer(add_indicator=True)`)
+
+???
+The first job is to find out whether your data has missing values and how they are encoded. Different sources use different sentinels, sometimes several in the same file, so a column full of 999 may be missing values in disguise. In theory we talk about data missing completely at random; in practice values are missing for a reason, such as a form field that did not apply or a sensor that failed, and that reason is often related to the target. So keep the information that a value was missing: scikit-learn can add indicator columns for you. We only discuss missing inputs today, not missing labels.
+
+---
+.center[
+![:scale 80%](images/row_nan_col_nan.png)
+]
+
+???
+Two simple situations. On the left, one feature is mostly missing: dropping that column is a reasonable baseline, and you should always compare fancier methods against it. On the right, a few rows have many missing values: dropping those rows is tempting, but then the model cannot predict for new data with missing values, and if the missingness is related to the outcome you have also removed the hard cases from your validation data, so your estimate becomes optimistic. Ask: which rows would be missing in a hospital dataset, and would they be the easy or the hard patients?
+
+---
+.center[
+![:scale 100%](images/imputation-schema.png)
+]
+
+???
+The alternative is imputation: build a model of the training data that fills in the holes, and apply the same fitted imputer to the test data. That is exactly the fit/transform pattern from earlier today, so the imputer belongs inside the pipeline, fitted only on the training folds. A data point where every feature is missing cannot be imputed meaningfully; in production you need a policy for such inputs.
+
+---
+class: spacious
+
+# Imputation Methods
+
+- Mean / Median (per column)
+- kNN
+- Regression models, iterated (`IterativeImputer`)
+- Matrix factorization (not in this lecture)
+
+???
+These are the methods we look at, in increasing order of complexity. Mean or median imputation fills each column with one constant. kNN imputation averages the values of similar rows. Model-based imputation predicts each incomplete feature from the others and iterates. Matrix factorization and probabilistic models exist too, but in tabular prediction tasks they rarely beat the simpler options by much.
+
+---
+class: fit
+# Mean and Median
+
+.center[
+![:scale 100%](images/imputation-median-schema.png)
+]
+
+???
+The simplest approach replaces each missing value by the mean or median of its column, computed on the training data. `SimpleImputer` supports mean, median, most frequent and a constant, and the constant strategy is what we use for categorical columns (for example the string "NA", which then becomes its own one-hot category).
+
+---
+class: fit
+.center[
+![:scale 90%](images/median_imputation.png)
+]
+
+???
+This is a toy example on iris where I removed petal measurements on purpose, in a way that depends on the class. The squares are imputed points. The median puts all of them at one location in the middle of the data, a place where no real flower lives, and the class information that was in those features is gone. This example is designed so that median imputation fails; on real data with few missing values it is often good enough.
+
+---
+# Comparing strategies in a pipeline
+
+.smaller[
+```python
+from sklearn.impute import SimpleImputer, KNNImputer
+nan_columns = np.any(np.isnan(X_train), axis=0)
+drop = make_pipeline(StandardScaler(), LogisticRegression())
+cross_val_score(drop, X_train[:, ~nan_columns], y_train, cv=10).mean()   # 0.830
+
+median = make_pipeline(SimpleImputer(strategy='median'), StandardScaler(), LogisticRegression())
+cross_val_score(median, X_train, y_train, cv=10).mean()                   # 0.830
+
+median_ind = make_pipeline(SimpleImputer(strategy='median', add_indicator=True),
+                           StandardScaler(), LogisticRegression())
+cross_val_score(median_ind, X_train, y_train, cv=10).mean()               # 0.883
+
+knn = make_pipeline(KNNImputer(), StandardScaler(), LogisticRegression())
+cross_val_score(knn, X_train, y_train, cv=10).mean()                      # 0.920
+```
+]
+
+???
+Here are the baselines side by side, all as pipelines so that imputation is fitted inside each cross-validation fold. Dropping the incomplete columns and median imputation give the same accuracy here. Adding missingness indicators helps a lot, because in this dataset whether a value is missing tells you something about the class. kNN imputation does better still. The point to stress: evaluate imputation by the downstream task, not by how plausible the filled values look.
+
+---
+class: spacious
+
+# KNN Imputation
+
+- Find k nearest neighbors that have non-missing values.
+- Fill in all missing values using the average of the neighbors.
+- Distances ignore missing coordinates (`nan_euclidean_distances`)
+
+???
+kNN imputation finds, for each incomplete row, the k most similar rows that have the value, and averages them. The difficulty is measuring distance when coordinates are missing; scikit-learn uses a Euclidean distance over the observed coordinates, rescaled for the number of missing ones. Remember that kNN distances depend on feature scale, just like the kNN classifier from Week 2.
+
+---
+# KNN Imputation: result
+
+.center[
+![:scale 60%](images/knn_imputation.png)
+]
+
+???
+The same iris example as for the median. The imputed points, drawn as squares, now sit inside their own class clusters instead of in one spot in the middle of the data, because each one borrows its values from similar flowers. Ask: what would happen to this picture if we forgot to scale the features first?
+
+---
+# Model-Driven Imputation
+
+- Train a regression model for each feature with missing values
+- Iterate: start from mean imputation, re-predict, repeat
+- `IterativeImputer` (still marked experimental in scikit-learn)
+
+.smaller[
+```python
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer
+rf_imp = IterativeImputer(estimator=RandomForestRegressor(n_estimators=20),
+                          max_iter=5)
+rf_pipe = make_pipeline(rf_imp, StandardScaler(), LogisticRegression())
+cross_val_score(rf_pipe, X_train, y_train, cv=10).mean()   # 0.938
+```
+]
+
+???
+Model-based imputation starts with a simple fill, then predicts each incomplete feature from all the others, and repeats until the values stop changing much. Any regressor works; the default is a Bayesian ridge regression, which is fast, and a random forest captures non-linear relations at a higher cost. Note the import line: `IterativeImputer` has to be enabled explicitly because its API may still change. On this designed example it gives the best score, but the gap to kNN is small and it is much slower. In practice, median imputation plus missingness indicators is a strong default, and the tree-based libraries of Week 5 handle missing values natively.
+
+---
+class: center, middle
+
+# Data Leakage
+
+???
+We have already met leakage twice: fitting feature selection before cross-validation,
+and target encoding. Now we look at it systematically, because it is the most common
+way applied ML results turn out to be wrong.
+
+---
+class: some-space, fit
+# Leakage: a reproducibility problem
+
+Kapoor & Narayanan (2023), "Leakage and the reproducibility crisis in machine-learning-based
+science", *Patterns* 4(9), 100804.
+
+- Survey of ML-based science: leakage affected 294 papers across 17 fields
+- Leakage = the evaluation uses information that would not be available when the model is used
+- Their taxonomy includes:
+  - no clean train/test separation (preprocessing or feature selection on all data, duplicates)
+  - features that are proxies of the target, or not available at prediction time
+  - test data not drawn from the target distribution (e.g. temporal leakage)
+
+???
+Kapoor and Narayanan collected published cases of leakage and found it in 294 papers
+across 17 fields, from medicine to political science, often with dramatically
+overstated results. Their definition is useful: leakage is anything that makes the
+evaluation use information the model will not have at prediction time. They also
+propose "model info sheets" that force authors to argue for each point. Your project
+papers in this course should be able to pass that checklist.
+
+---
+class: smaller
+# Leak 1: preprocessing fitted on the full data
+
+.left-column[
+Feature selection on noise (earlier today):
+```
+leaky:    CV R^2 =  0.91
+pipeline: CV R^2 = -0.25
+held-out: R^2    = -0.10
+```
+]
+.right-column[
+Target encoding of a random 2,000-level feature:
+```python
+te = TargetEncoder(target_type="continuous")
+enc_leaky = te.fit(X, y).transform(X)
+enc_cross = te.fit_transform(X, y)
+```
+```
+fit().transform()  train R^2 = 0.456, test R^2 = -0.558
+fit_transform()    train R^2 = 0.002, test R^2 = -0.002
+```
+]
+
+.reset-column[
+Scalers, imputers, encoders, feature selection, PCA, SMOTE: all are fit on training folds only.
+]
+
+???
+Anything that learns from data is part of the model. Here are two measured examples:
+feature selection on noise and target encoding without cross-fitting. In the second,
+a feature that is pure noise appears to explain 46 percent of the variance on the
+training data and does worse than a constant on the test data. Resampling methods
+such as SMOTE, which we meet in Week 7, belong in the same list: oversampling before
+splitting puts synthetic copies of test points into training.
+
+---
+class: smaller
+# Leak 2: target leakage
+
+- A feature that is derived from the target, or only known after it
+- House data: adding `price_per_sqft = price / sqft_living`
+
+```
+honest features: R^2 = 0.693
+with leak:       R^2 = 0.889
+```
+
+- Real examples: "treatment given" when predicting diagnosis, "account closed date"
+  when predicting churn, hospital-specific scanner tags in medical images
+- Check: *at the moment of prediction, would I know this value?*
+
+???
+Target leakage is not a coding error; it is a mistake about what is known when. My
+example is blatant, but real cases are subtle: a column filled in by the same process
+that determines the label, or a timestamp that is only set after the outcome. A useful
+habit: for every feature, write down when and by whom it is recorded. Suspiciously good
+results, or a single feature with huge importance, are the typical warning signs;
+interpretation tools from Week 9 help find them.
+
+---
+class: smaller
+# Leak 3: duplicates across splits
+
+3,000 houses, each copied three times (as after naive oversampling or merging sources):
+
+```python
+rf = RandomForestRegressor(n_estimators=100, random_state=0)
+cross_val_score(rf, X_dup, y_dup, cv=KFold(5, shuffle=True))
+cross_val_score(rf, X_dup, y_dup, cv=GroupKFold(5), groups=house_id)
+```
+```
+original,   KFold:      0.831
+duplicated, KFold:      0.984
+duplicated, GroupKFold: 0.818
+```
+
+- Also: repeated measurements of the same patient, user, or house (197 houses sold twice here)
+- Fix: deduplicate, and split by group (`GroupKFold`, Week 2)
+
+???
+If identical or near-identical rows are on both sides of a split, the model can
+memorize instead of generalize. With copies, a random forest's cross-validated R² jumps
+from 0.83 to 0.98. Grouped cross-validation, which we saw last week, restores an honest
+estimate. The real house data has the same issue in a milder form: about 200 houses
+were sold twice, and a model that saw the first sale has an easy time with the second.
+
+---
+class: smaller
+# Leak 4: temporal leakage
+
+- Shuffled splits train on the future and test on the past
+- House sales, sorted by date, gradient boosting:
+
+```
+shuffled KFold:  R^2 = 0.886
+TimeSeriesSplit: R^2 = 0.873
+```
+
+- Small here (one year, stable market); large under trends, seasonality, or drift
+- Also: features computed with future data (rolling means over the whole series)
+
+???
+When the model will be used on future data, evaluation must use only past data for
+training. Here the gap is small, because the sales cover one relatively stable year,
+so I don't want to overstate it. In markets with trends, like a fast-moving housing market,
+or in any forecasting task, the gap can be much larger. We treat
+time-aware evaluation properly in Week 11 and drift in production in Week 12.
+
+---
+class: smaller, fit
+# The fix: the pipeline goes inside cross-validation
+
+```python
+model = make_pipeline(
+    make_column_transformer(
+        (TargetEncoder(target_type="continuous"), ["zipcode"]),
+        (StandardScaler(), make_column_selector(dtype_include="number"))),
+    Ridge())
+
+cv = TimeSeriesSplit(5)          # or GroupKFold / StratifiedKFold: match deployment
+scores = cross_val_score(model, X_sorted_by_date, y, cv=cv)
+```
+
+Checklist:
+1. Every step that learns from data is inside the pipeline
+2. The splitter matches how the model will be used (time, groups)
+3. Deduplicate before splitting; every feature is available at prediction time
+4. The test set is touched once, at the end
+
+???
+This slide is the summary of the leakage section. The pipeline handles the first
+point mechanically. The other three require thinking about the application; no
+library does them for you. Point four is the one people break most often under
+deadline pressure: looking at the test score, changing something, and looking again
+turns the test set into a validation set.
+
+---
+class: smaller
+# Tracking the difference: MLflow
+
+```python
+import mlflow
+mlflow.set_experiment("week03-preprocessing")
+
+for run_name, cv_r2, test_r2 in [("feature-selection / leaky", leaky_cv, leaky_test),
+                                 ("feature-selection / pipeline", correct_cv, correct_test)]:
+    with mlflow.start_run(run_name=run_name):
+        mlflow.log_params({"percentile": 5, "n_features": 10000, "seed": 0})
+        mlflow.log_metrics({"cv_r2": cv_r2, "test_r2": test_r2,
+                            "optimism": cv_r2 - test_r2})
+        mlflow.set_tag("leakage", "yes" if "leaky" in run_name else "no")
+```
+
+- `uv run mlflow ui` → compare runs side by side
+- Logging CV and held-out scores together makes optimism visible
+
+???
+We continue the MLflow habit from Weeks 1 and 2. The lab logs the leaky and the correct
+version of two experiments and compares them. The metric I want you to notice is
+optimism, the gap between the cross-validated score and the held-out score: close to
+zero for the correct pipeline, huge for the leaky one. Logging both numbers for every
+run is a cheap early warning. Week 8 covers MLflow Tracking in more depth.
+
+---
+class: middle
+
+# Try it 2: Ames housing mini-competition (15 min)
+
+- 1,460 houses, 79 features (43 text), many missing values; target: log sale price
+- Build **one pipeline**: `ColumnTransformer`, `make_column_selector`, `SimpleImputer`,
+  `OneHotEncoder(handle_unknown="infrequent_if_exist", min_frequency=...)`, optionally `TargetEncoder`
+- Compare variants with 5-fold CV on the training part only
+- Evaluate your final choice on the held-out set **once**; post RMSE (log price)
+- Baseline, numeric features only: CV RMSE = 0.157
+
+???
+This is a small competition in pairs. The data is the Ames housing set from OpenML,
+which has many categorical columns and missing values, so it exercises everything from
+today. The rule that matters: all comparisons on cross-validation, one final look at
+the test set. At the end, collect the numbers and ask the best teams what they did and
+how many variants they tried; that leads naturally to the multiple-comparisons issue.
+
+---
+class: middle
+
+# Try it 3: find the leakage (15 min)
+
+A colleague reports an impressive CV R² on the house data. In `lab.ipynb`, section "Try it 3":
+
+1. Find every leak in their code and name its kind (from the four above)
+2. Write a corrected evaluation: one pipeline, `TargetEncoder` inside it, a time-aware splitter
+3. Log both runs to MLflow with a `leakage` tag and compare them
+
+???
+The colleague's code contains a ZIP-code target mean computed on all rows, duplicated
+expensive houses before splitting, a scaler fit outside cross-validation, and a shuffled
+split on time-ordered sales. Let pairs work for ten minutes, then go through the leaks
+one by one and ask which ones actually changed the score. The scaler leak changes nothing
+for trees, which is a good discussion point: harmless in this case is still wrong practice.
+
+---
+class: some-space, fit
+# Summary
+
+- Scale features for distance-based and penalized models; trees do not care
+- Encode categories with `OneHotEncoder` (infrequent / unknown handling) or `TargetEncoder`
+- Check distributions; transform skewed features and targets, then verify with CV
+- Impute missing values inside the pipeline; missingness indicators often help
+- Put every learned preprocessing step in a `Pipeline` and cross-validate the pipeline
+- Leakage: preprocessing on all data, target proxies, duplicates, the future
+
+Next week: linear models, regression, regularization, logistic regression, SVMs
+
+???
+Five points to remember. Next week we study linear models in detail; everything from
+today about scaling and one-hot encoding directly affects how their coefficients and
+penalties behave. Homework 1 uses today's pipeline tools, so work through the lab first.
+
+---
+class: center, middle
+# Questions?
+
+???
+Open the floor. If time allows, return to the leak your group found hardest in Try it 3.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (14 slides); they are not needed for the homework or the project.
+
+---
+class: center, middle
+
+Coming up with features is difficult, time-consuming, requires expert knowledge.
+"Applied machine learning" is basically feature engineering.
+.quote_author[Andrew Ng]
+
+???
+This quote is older than deep learning's takeover of images and text, but for
+tabular data it is still accurate. Tree ensembles and neural networks reduce
+the need for some hand-made features, but deciding what to measure, how to
+encode it, and what is legitimately available at prediction time remains our job.
+
+---
+# Sparse Data
+
+- Many features, most entries zero (counts, clicks, one-hot columns): store only non-zeros.
+- Centering subtracts a value from every entry: the matrix becomes dense and may not fit in memory.
+- Scale without centering: `MaxAbsScaler` or `StandardScaler(with_mean=False)`.
+
+???
+Sparse data is common: word counts, user actions, one-hot encodings with many
+levels. A sparse matrix only stores non-zero entries. If you subtract the mean,
+almost every entry becomes non-zero and memory use can grow by orders of magnitude.
+Multiplication keeps zeros at zero, so we can still scale. MaxAbsScaler divides
+each feature by its maximum absolute value; scikit-learn refuses to center sparse
+input rather than silently densifying it.
+
+---
+# Going wildest with Pipelines
+```python
+from sklearn.tree import DecisionTreeRegressor
+pipe = Pipeline([('scaler', StandardScaler()),
+                 ('regressor', Ridge())])
+
+param_grid = [{'regressor': [DecisionTreeRegressor()],
+               'regressor__max_depth': [2, 3, 4],
+               'scaler': ['passthrough']},
+              {'regressor': [Ridge()],
+               'regressor__alpha': [0.1, 1],
+               'scaler': [StandardScaler(), MinMaxScaler(),
+                          'passthrough']}
+             ]
+grid = GridSearchCV(pipe, param_grid)
+grid.fit(X_train, y_train)
+grid.score(X_test, y_test)
+```
+
+???
+A list of grids lets different models have different parameters: trees do not need
+scaling and have max_depth, Ridge has alpha. This is convenient, but be careful: the
+more configurations you compare on the same folds, the more optimistic the best score
+becomes. That selection bias is why Week 8 introduces nested cross-validation.
+
+---
+# One-Hot (Dummy) Encoding
+
+.narrow-left-column[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro</th><th>salary</th><th>vegan</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>Manhattan</td><td>103</td><td>No</td></tr>
+    <tr><th>1</th><td>Queens</td><td>89</td><td>No</td></tr>
+    <tr><th>2</th><td>Manhattan</td><td>142</td><td>No</td></tr>
+    <tr><th>3</th><td>Brooklyn</td><td>54</td><td>Yes</td></tr>
+    <tr><th>4</th><td>Brooklyn</td><td>63</td><td>Yes</td></tr>
+    <tr><th>5</th><td>Bronx</td><td>219</td><td>No</td></tr>
+    </tbody>
+  </table>
+]
+
+.wide-right-column[
+.tiny[
+```python
+pd.get_dummies(df, columns=['boro'], dtype=int)
+```
+<table border="1" class="dataframe" style="font-size:15px">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>salary</th><th>vegan</th><th>boro_Bronx</th><th>boro_Brooklyn</th><th>boro_Manhattan</th><th>boro_Queens</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>103</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>1</th><td>89</td><td>No</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+    <tr><th>2</th><td>142</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>3</th><td>54</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>4</th><td>63</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>5</th><td>219</td><td>No</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+    </tbody>
+  </table>
+]
+]
+???
+The columns argument restricts the encoding to the columns we name, so the target stays as it is.
+
+---
+# One-Hot (Dummy) Encoding
+.narrow-left-column[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro</th><th>salary</th><th>vegan</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>2</td><td>103</td><td>No</td></tr>
+    <tr><th>1</th><td>3</td><td>89</td><td>No</td></tr>
+    <tr><th>2</th><td>2</td><td>142</td><td>No</td></tr>
+    <tr><th>3</th><td>1</td><td>54</td><td>Yes</td></tr>
+    <tr><th>4</th><td>1</td><td>63</td><td>Yes</td></tr>
+    <tr><th>5</th><td>0</td><td>219</td><td>No</td></tr>
+    </tbody>
+  </table>
+]
+.wide-right-column[
+.tiny[
+
+```python
+pd.get_dummies(df_ordinal, columns=['boro'], dtype=int)
+```
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th><th>salary</th><th>vegan</th><th>boro_0</th><th>boro_1</th><th>boro_2</th><th>boro_3</th></tr>
+  </thead>
+  <tbody>
+    <tr><th>0</th><td>103</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>1</th><td>89</td><td>No</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+    <tr><th>2</th><td>142</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>3</th><td>54</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>4</th><td>63</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>5</th><td>219</td><td>No</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+  </tbody>
+</table>
+]
+]
+???
+Categories often arrive already coded as integers, like our ZIP codes. By default
+get_dummies leaves integer columns alone, because it cannot tell a code from a
+quantity. Naming the column explicitly one-hot encodes it anyway. Always check
+which of your integer columns are really categorical.
+
+---
+class: left, middle
+
+.center[
+![:scale 90%](images/house_price_hist.png)
+]
+
+???
+The histograms show the same thing. Areas and lot sizes are strongly right-skewed,
+which is typical for quantities that are products of several factors. A log transform
+is the usual quick fix. Power transforms generalize this and estimate the right
+transformation from the data.
+---
+# Ordinal encoding
+
+.left-column[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>boro_ordinal</th><th>salary</th><th>vegan</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>2</td><td>103</td><td>No</td></tr>
+    <tr><th>1</th><td>3</td><td>89</td><td>No</td></tr>
+    <tr><th>2</th><td>2</td><td>142</td><td>No</td></tr>
+    <tr><th>3</th><td>1</td><td>54</td><td>Yes</td></tr>
+    <tr><th>4</th><td>1</td><td>63</td><td>Yes</td></tr>
+    <tr><th>5</th><td>0</td><td>219</td><td>No</td></tr>
+    </tbody>
+  </table>
+]
+
+.right-column[
+![:scale 100%](images/boro_ordinal_classification.png)
+]
+
+???
+A linear classifier on this single feature can only place one threshold. The vegans
+are all in Brooklyn, code 1, surrounded by non-vegans on both sides, so no single
+threshold separates them. A tree could use two splits; a linear model cannot.
+Ask: which reordering of the codes would make the problem linearly separable?
+Any ordering that puts Brooklyn at an end; that dependence on arbitrary codes is the problem.
+---
+.tiny[
+.left-column[
+```python
+df = pd.DataFrame({
+  'boro': ['Manhattan', 'Queens', 'Manhattan',
+           'Brooklyn', 'Brooklyn', 'Bronx'],
+  'salary': [103, 89, 142, 54, 63, 219],
+  'vegan': ['No', 'No','No','Yes', 'Yes', 'No']})
+df_dummies = pd.get_dummies(df, columns=['boro'], dtype=int)
+```
+<table border="1" class="dataframe" style="font-size:12px">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th><th>salary</th><th>vegan</th><th>boro_Bronx</th><th>boro_Brooklyn</th><th>boro_Manhattan</th><th>boro_Queens</th></tr>
+  </thead>
+  <tbody>
+    <tr><th>0</th><td>103</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>1</th><td>89</td><td>No</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+    <tr><th>2</th><td>142</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>3</th><td>54</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>4</th><td>63</td><td>Yes</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>5</th><td>219</td><td>No</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+  </tbody>
+</table>
+]
+.right-column[
+```python
+df = pd.DataFrame({
+  'boro': ['Brooklyn', 'Manhattan', 'Brooklyn',
+           'Queens', 'Brooklyn', 'Staten Island'],
+  'salary': [61, 146, 142, 212, 98, 47],
+  'vegan': ['Yes', 'No','Yes','No', 'Yes', 'No']})
+df_dummies = pd.get_dummies(df, columns=['boro'], dtype=int)
+```
+<table border="1" class="dataframe" style="font-size:12px">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th><th>salary</th><th>vegan</th><th style="color:red">boro_Brooklyn</th>
+      <th style="color:red">boro_Manhattan</th><th style="color:red">boro_Queens</th><th style="color:red">boro_Staten Island</th></tr>
+  </thead>
+  <tbody>
+    <tr><th>0</th><td>61</td><td>Yes</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>1</th><td>146</td><td>No</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>2</th><td>142</td><td>Yes</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>3</th><td>212</td><td>No</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    <tr><th>4</th><td>98</td><td>Yes</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>5</th><td>47</td><td>No</td><td>0</td><td>0</td><td>0</td><td>1</td></tr>
+  </tbody>
+</table>
+]]
+
+???
+A common pitfall in practice. A second batch of data has no one from the Bronx but
+someone from Staten Island. get_dummies produces the same number of columns, but the
+columns mean different things: the third one-hot column was Brooklyn, it is now
+Manhattan. If you pass NumPy arrays to a model, nothing warns you. get_dummies
+learns nothing from the training data, so it cannot guarantee consistent columns
+between training and new data.
+---
+class: smaller
+
+# Pandas Categorical Columns
+
+.smaller[
+```python
+df['boro'] = pd.Categorical(df.boro,
+                            categories=['Manhattan', 'Queens', 'Brooklyn',
+                                        'Bronx', 'Staten Island'])
+pd.get_dummies(df, columns=['boro'], dtype=int)
+```
+]
+.tiny[
+<table border="1" class="dataframe">
+    <thead>
+      <tr style="text-align: right;">
+      <th></th><th>salary</th><th>vegan</th><th>boro_Manhattan</th><th>boro_Queens</th><th>boro_Brooklyn</th><th>boro_Bronx</th><th>boro_Staten Island</th></tr>
+    </thead>
+    <tbody>
+    <tr><th>0</th><td>103</td><td>No</td><td>1</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>1</th><td>89</td><td>No</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>2</th><td>142</td><td>No</td><td>1</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+    <tr><th>3</th><td>54</td><td>Yes</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>4</th><td>63</td><td>Yes</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td></tr>
+    <tr><th>5</th><td>219</td><td>No</td><td>0</td><td>0</td><td>0</td><td>1</td><td>0</td></tr>
+    </tbody>
+  </table>
+]
+
+???
+One fix in pandas: declare the full set of categories with a Categorical dtype.
+get_dummies then creates a column for every declared category, including Staten
+Island which does not occur here, so training and new data get identical columns.
+This works when you know all categories up front. The more general fix is to learn
+the categories from the training data, which is what OneHotEncoder does.
+---
+class: some-space
+
+# Dummy variables and collinearity
+
+- One-hot is redundant (last column = 1 – sum of the others)
+- Unpenalized linear models: exact collinearity, no unique solution
+- `OneHotEncoder(drop="first")` or `drop="if_binary"` removes one column
+- With regularization, keeping all columns is usually fine and more interpretable
+- Which column you drop changes penalized models
+
+???
+With an intercept, the one-hot columns of a feature sum to one, so they are
+collinear with the intercept. For ordinary least squares the solution is then not
+unique, which is why statistics courses always drop a reference level. With Ridge or
+Lasso, which we use in Week 4, the penalty picks a unique solution and keeping all
+levels treats them symmetrically. drop="if_binary" is a sensible middle ground:
+yes/no features become one column, multi-level features keep all levels.
+---
+class: some-space
+
+# Models Supporting Discrete Features
+
+- In principle: tree-based models, naive Bayes
+- scikit-learn:
+  - `HistGradientBoostingClassifier/Regressor(categorical_features="from_dtype")`
+  - `DecisionTree*` and `RandomForest*`: need encoding (ordinal is fine for trees)
+  - `CategoricalNB`
+- LightGBM, CatBoost, XGBoost: native categorical support
+
+???
+Trees can split on subsets of categories directly. In scikit-learn, histogram-based
+gradient boosting supports this natively: with categorical_features="from_dtype" it
+uses pandas category columns without any encoding. For random forests an ordinal
+encoding is usually good enough, since several splits can isolate any category.
+LightGBM, CatBoost and XGBoost handle categories natively as well; CatBoost in
+particular uses an ordered form of target encoding. We compare these in Week 5.
+---
+class: left, middle
+
+.center[
+![:scale 85%](images/house_price_scaled_box.png)
+]
+
+???
+After standard scaling all features have the same mean and variance, but their shapes
+still differ: sqft_lot and sqft_lot15 have extreme right tails, waterfront is binary
+with a few ones, yr_renovated is mostly zero. Linear models and neural networks tend
+to work better when features are roughly symmetric without extreme values.
+---
+.wide-left-column[
+![:scale 85%](images/house_price_hist.png)
+]
+
+.narrow-right-column[Before]
+.clear-column[]
+
+.wide-left-column[![:scale 85%](images/house_price_hist_boxcox.png)]
+.narrow-right-column[After (Yeo-Johnson, λ in titles)]
+
+???
+Before and after. The estimated lambda is in each subplot title. The area features
+get lambdas near zero, so they are close to log-transformed and are now roughly
+symmetric. Binary and nearly constant features, such as waterfront and yr_renovated,
+cannot be made Gaussian by any monotone transformation; applying the transform to them
+is harmless but pointless.
+---
+class: spacious
+
+# Comparison of Imputation Methods
+
+.center[
+![:scale 100%](images/med_knn_rf_comparison.png)
+]
+
+???
+Here are the three imputations next to each other on the same data. This is an artificial example meant to illustrate the ideas. In practice, median imputation plus missingness indicators is a strong default, and many tree-based libraries we will see in Week 5 handle missing values natively, which is another option to keep in mind.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

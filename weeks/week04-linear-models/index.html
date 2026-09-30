@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 4: Linear Models: Regression, Regularization & Classification</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 4: Linear Models: Regression, Regularization & Classification
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is about linear models, the workhorses of applied machine learning. Most of you have fit a linear regression before, so I will spend little time on the basics and more on regularization, on how to tune these models, and on the classification side: logistic regression and support vector machines, including kernel SVMs. The lab notebook for today is `lab.ipynb` in this week's folder.
+
+---
+class: spacious, fit
+
+# Two prediction problems
+
+.left-column[
+### What is this house worth?
+- Automated valuation models price homes for lenders, insurers and tax assessors
+- Errors are measured in money, and they are asymmetric in consequence
+- Ames, Iowa: 2,930 sales, 80 features
+]
+.right-column[
+### Is this tumour malignant?
+- Diagnosis from 30 measurements of a biopsy image
+- The label is not enough: a doctor needs a calibrated probability
+- Wisconsin breast cancer data: 569 cases
+]
+
+???
+Here are the two problems that run through today. The first is a regression problem: estimating house prices, which is what automated valuation models at banks and tax offices do every day. The second is a classification problem where we need more than a yes or no, we need a probability we can act on. Ask the class: for each problem, what does a mistake cost, and is an overestimate as bad as an underestimate? Linear models are often the first thing deployed for both kinds of problems, because they are fast, stable and easy to audit.
+
+---
+class: spacious
+
+# Plan for today
+
+1. Linear regression, Ridge, Lasso, Elastic Net
+2. Try it 1: a small Ames competition
+3. Linear classification: logistic regression and linear SVMs, multiclass
+4. Kernel SVMs
+5. Try it 2: predict, then run
+6. Tracking regularization paths and model comparisons in MLflow
+
+???
+This is the roadmap. The first half is regression and regularization, the second half classification and kernels. There are two short in-class activities, each about 10 to 15 minutes, and we will use MLflow again, as in the previous weeks, to keep track of the models we compare. If we run short on time, the kernel approximation material at the end of the lab is optional reading.
+
+---
+class: center, middle
+
+# Linear Models for Regression
+
+???
+Now to the main topic. Everything today is a linear model: the prediction is a weighted sum of the features. What differs between methods is how the weights are chosen.
+
+---
+class:center
+
+# Linear Models for Regression
+
+![:scale 50%](images/linear_regression_1d.png)
+
+$$\hat{y} = w^T \mathbf{x} + b = \sum_{i=1}^p w_i x_i +b$$
+
+???
+Predictions in all linear models for regression have this form: an inner product of the features with a weight vector w, plus an intercept b. They are called linear because they are linear in the parameters w. You can replace the features by any non-linear functions of the inputs, such as polynomials or splines, and it is still a linear model; we saw that with `PolynomialFeatures` last week. All the models today share this prediction formula and differ in how they find w and b from the training data.
+
+---
+# Ordinary Least Squares
+
+$$\hat{y} = w^T \mathbf{x} + b = \sum_{i=1}^p w_i x_i +b $$
+
+`$$\min_{w \in \mathbb{R}^p, b\in\mathbb{R}} \sum_{i=1}^n (w^T\mathbf{x}_i + b - y_i)^2$$`
+
+Unique solution if $\mathbf{X} = (\mathbf{x}_1, ... \mathbf{x}_n)^T$ has full column rank.
+
+???
+Ordinary least squares, going back to Gauss and Legendre, picks w and b to minimize the squared error on the training set. If there are more samples than features and the features are not linearly dependent, there is a unique solution that is cheap to compute. If there are more features than samples, or features are exactly collinear, there are infinitely many perfect solutions, and with strong correlations the solution becomes unstable. Ask the class: with one-hot encoding plus an intercept, do we have full column rank?
+
+---
+# Ridge Regression
+
+`$$ \min_{w \in \mathbb{R}^p, b\in\mathbb{R}} \sum_{i=1}^n (w^T\mathbf{x}_i + b - y_i)^2 + \alpha ||w||^2 $$`
+
+Always has a unique solution.
+
+Tuning parameter alpha.
+
+???
+Ridge regression adds a penalty on the squared L2 norm of w. Now we want to fit the data and also keep the coefficients small, which makes the model less sensitive to small changes in the input. The two terms pull in opposite directions: alpha equal to zero gives ordinary least squares, a very large alpha gives a constant prediction. The right trade-off depends on the data and is chosen by cross-validation. Note that the intercept b is not penalized.
+
+---
+# (regularized) Empirical Risk Minimization
+
+`$$ \min_{f \in F} \underbrace{\sum_{i=1}^n L(f(\mathbf{x}_i), y_i)}_{\text{data fitting}} + \underbrace{\alpha R(f)}_{\text{regularization}} $$`
+
+???
+Ridge is an instance of a general recipe called regularized empirical risk minimization. Choose a family of functions F, a loss L that measures how well we fit the training data, and a regularizer R that penalizes complex functions. Linear regression, logistic regression, SVMs and neural networks all fit this template with different choices of F, L and R, and much of learning theory is built around it. The intuition: to do well on new data we need to fit the training data reasonably, but we also want a simple model so that training and test performance stay close.
+
+---
+# Reminder on model complexity
+
+![:scale 80%](images/overfitting_underfitting_cartoon_full.png)
+
+???
+This is the picture from Week 2. Regularization is a knob for model complexity. A large alpha restricts the model and puts us on the left, underfitting. A small alpha lets the model follow the training data and moves us to the right. Tuning alpha is how we look for the sweet spot, just like tuning k in nearest neighbors.
+
+---
+# Ames Housing Dataset
+
+![:scale 80%](images/ames_housing_scatter.png)
+.tiny[
+```python
+ames = fetch_openml(data_id=43926, as_frame=True)   # "ames_housing"
+X, y = ames.data, ames.target
+X, y = X[X.Gr_Liv_Area <= 4000], y[X.Gr_Liv_Area <= 4000]
+X_train, X_test, y_train, y_test = train_test_split(X, y, random_state=2)
+print(X_train.shape)   # (2193, 80)
+```
+]
+???
+The Ames data describes house sales in Ames, Iowa between 2006 and 2010, compiled by Dean De Cock as a modern replacement for the old Boston housing data. The plot shows the log price against each of the 34 numeric features. Some relations are clearly linear, such as living area and year built, others are not, and each panel is only a one-dimensional projection that ignores interactions. We drop the few houses above 4000 square feet, as the dataset author recommends, because they are unusual partial sales. We still start with a linear model: always start from the simplest reasonable baseline.
+
+---
+class: fit
+![:scale 100%](images/ames_scaling.png)
+
+???
+The numeric features live on very different scales: lot area is in the tens of thousands, the number of bathrooms is below five. For distance-based models like kNN this was a problem, and it is a problem for penalized linear models too, because the penalty treats all coefficients alike: a feature measured in large units needs only a tiny coefficient and is barely penalized. So we standardize the features before Ridge or Lasso, inside the pipeline.
+
+---
+class: fit
+# Coefficient of determination R^2
+
+`$$ R^2(y, \hat{y}) = 1 - \frac{\sum_{i=0}^{n - 1} (y_i - \hat{y}_i)^2}{\sum_{i=0}^{n - 1} (y_i - \bar{y})^2} $$`
+
+`$$ \bar{y} =  \frac{1}{n} \sum_{i=0}^{n - 1} y_i$$`
+
+Can be negative for biased estimators - or the test set!
+
+???
+The default score for regressors in scikit-learn is R squared. It compares your squared error with the error of always predicting the mean: one is perfect, zero means no better than the mean. On a test set it can be negative, which means the model is worse than predicting the mean. R squared is unitless, which makes it easy to compare across problems, but it hides the scale of the errors. For a house price model the stakeholders will want the error in dollars, so we will also use RMSE or mean absolute error, which the next slides cover. Metric choice for classification comes in Week 7.
+
+---
+class: center, middle
+# Metrics for regression models
+???
+Regression metrics are simpler, since there is no threshold, but the choice still matters, mainly through how errors are weighted: squared or absolute, absolute or relative.
+
+---
+class:spacious
+# Built-in standard metrics
+- $\text{R}^2$ : easy to understand scale
+- MSE / RMSE : same units as the target (RMSE)
+- Mean absolute error, median absolute error: more robust
+- MAPE: relative error (`mean_absolute_percentage_error`)
+- D² scores: $R^2$-style skill score for other losses (`d2_absolute_error_score`, …)
+???
+R² is the default score of regressors: 1 is perfect, 0 is the constant mean prediction, negative is worse than that. RMSE is in the units of the target, which makes it easy to communicate. Absolute errors reduce the influence of outliers compared with squared errors. For model selection all of these exist as scorers, with a `neg_` prefix for losses because scorers must be "greater is better".
+
+---
+class: spacious, fit3
+# Absolute vs Relative: MAPE
+`$$ \text{MAPE} = \frac{100}{n} \sum_{i=1}^{n}\left|\frac{y-\hat{y}}{y}\right|$$`
+
+.center[
+![:scale 50%](images/mape.png)
+]
+???
+MAPE divides each error by the true value, so the same absolute error counts much more for small targets. On California housing, two test points with an absolute error of about 1.0 (in units of $100k) get a MAPE of 240% and 22% respectively. MAPE is common in forecasting, which we see in Week 11, but it is undefined at zero and explodes near zero, and it penalizes over-prediction more than under-prediction. Use it only when the target is strictly positive and relative error is really what matters.
+
+---
+class: smaller
+# Preprocessing
+```python
+cat_preprocessing = make_pipeline(
+    SimpleImputer(strategy='constant', fill_value='NA'),
+    OneHotEncoder(handle_unknown='ignore'))
+
+cont_preprocessing = make_pipeline(
+    SimpleImputer(),
+    StandardScaler())
+
+preprocess = make_column_transformer(
+    (cat_preprocessing, make_column_selector(dtype_include=['object', 'category'])),
+    remainder=cont_preprocessing)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, random_state=2)
+cross_val_score(
+    make_pipeline(preprocess, LinearRegression()),
+    X_train, y_train, cv=5)
+```
+```
+array([0.934, 0.926, 0.931, 0.891, 0.897])
+```
+
+???
+This is the pipeline from last week applied to Ames. Categorical columns, which pandas stores as object or category dtype, are imputed with a constant and one-hot encoded; `handle_unknown='ignore'` protects us against categories that appear only in a validation fold. Numeric columns are imputed and standardized. Plain linear regression on top already reaches an R squared around 0.92. That sounds great, but keep the scale in mind: the remaining error is still tens of thousands of dollars per house.
+
+---
+class: smaller
+# Skewed targets
+.left-column[
+```python
+y_train.hist(bins='auto')
+```
+![:scale 100%](images/ames_housing_price_hist.png)
+
+]
+.right-column[
+```python
+np.log(y_train).hist(bins='auto')
+```
+![:scale 100%](images/ames_housing_price_hist_log.png)
+
+]
+
+???
+Prices are right-skewed: most houses are moderately priced and a few are very expensive. A squared loss on the raw scale lets those few expensive houses dominate the fit. Also, errors in prices are naturally relative: being off by 20,000 dollars matters more for a 100,000 dollar house than for a 500,000 dollar one. Taking the log of the target makes the distribution roughly symmetric and turns additive errors into relative ones. Ask: what does a coefficient mean after this transformation?
+
+---
+class: smaller
+
+# Log target and Ridge
+```python
+from sklearn.compose import TransformedTargetRegressor
+log_regressor = TransformedTargetRegressor(
+    LinearRegression(), func=np.log, inverse_func=np.exp)
+cross_val_score(make_pipeline(preprocess, log_regressor), X_train, y_train, cv=5)
+```
+```
+array([0.95 , 0.937, 0.936, 0.911, 0.917])
+```
+```python
+log_ridge = TransformedTargetRegressor(
+    Ridge(), func=np.log, inverse_func=np.exp)
+cross_val_score(make_pipeline(preprocess, log_ridge), X_train, y_train, cv=5)
+```
+```
+array([0.948, 0.949, 0.94 , 0.918, 0.931])
+```
+???
+`TransformedTargetRegressor` fits the model on the log of the target and transforms predictions back with the exponential, so scores are still computed on dollars. That alone improves every fold. Replacing linear regression by Ridge with the default alpha of one helps a little more, and makes the fold scores more consistent. A common pitfall is to log-transform y by hand before cross-validation and then compare R squared on the log scale with R squared on the original scale; those numbers are not comparable.
+
+---
+.smallest[
+```python
+pipe = Pipeline([('preprocessing', preprocess), ('ridge', log_ridge)])
+param_grid = {'ridge__regressor__alpha': np.logspace(-3, 3, 13)}
+
+grid = GridSearchCV(pipe, param_grid, cv=RepeatedKFold(n_splits=10, n_repeats=5),
+                    return_train_score=True)
+grid.fit(X_train, y_train)
+print(grid.best_params_, grid.best_score_)
+```
+```
+{'ridge__regressor__alpha': 3.162} 0.939
+```
+]
+.center[
+![:scale 50%](images/ridge_alpha_search.png)
+]
+
+???
+Now we tune alpha with a grid search, the tool from Week 2. The double underscore names reach into the pipeline and then into the regressor inside `TransformedTargetRegressor`. For regularization parameters use a logarithmic grid; 13 points is more than you need, I use it for a smooth plot. Three observations: training scores are always above validation scores; the uncertainty band is wide compared with the differences between alphas; and the optimum is flat around alpha of 3. With 2,000 samples and a few hundred features, regularization helps only a little here. Plotting the 50 individual folds (Backup) shows that the spread between folds is larger than the effect of changing alpha, so do not declare a winner from a small difference in mean score; Week 8 makes this rigorous.
+
+---
+class: spacious, fit
+
+# Try it 1: a small Ames competition (15 min)
+
+- Goal: lowest **test RMSE in dollars** on the held-out Ames test set
+- Linear models only: `Ridge`, `Lasso`, `ElasticNet`, their `...CV` versions
+- Any preprocessing: log target, `SplineTransformer` or `PolynomialFeatures` on a few columns, adding or dropping features
+- Choose everything with cross-validation on the training set; touch the test set **once**
+- Lab: section "Try it 1" in `lab.ipynb` (baseline: CV RMSE about $19,600)
+
+???
+Work in pairs. Start from the baseline in the lab, which is the tuned Ridge with a log target, and try to beat it using only the training data. At the end, each pair evaluates its final model once on the test set and we collect the numbers on the board. Before we start, ask: why can you not simply try twenty variants on the test set and keep the best? The answer, overfitting the test set, is the same point we made about validation sets in Week 2, and it is the reason we will introduce nested cross-validation in Week 8.
+
+---
+class: fit
+# Triazine Dataset
+
+```python
+triazines = fetch_openml('triazines', version=1, as_frame=True)
+triazines.data.shape
+```
+```
+(186, 60)
+```
+```python
+triazines.target.hist()
+```
+.center[
+![:scale 40%](images/triazine_bar.png)
+]
+
+???
+To see regularization matter, we need a harder setting: few samples relative to the number of features. The triazines dataset is a small drug-design (QSAR) problem: 186 molecules described by 60 chemical descriptors, and the target is a measure of biological activity. After the train/test split we have about 140 training samples for 60 features, which is where least squares starts to struggle.
+
+---
+```python
+X_train, X_test, y_train, y_test = train_test_split(
+    triazines.data, triazines.target, random_state=0)
+cross_val_score(LinearRegression(), X_train, y_train, cv=5)
+```
+```
+array([ 0.213,  0.129, -0.796, -0.222, -0.155])
+```
+```python
+cross_val_score(Ridge(), X_train, y_train, cv=5)
+```
+```
+array([0.263, 0.455, 0.024, 0.23 , 0.036])
+```
+
+???
+Linear regression gives negative R squared on three of five folds: it is worse than predicting the mean. Ridge with the default alpha is positive on all folds, though still weak; this is a hard, noisy problem. Point out the variance across folds as well: with 28 validation points per fold, a single score tells you little.
+
+---
+```python
+param_grid = {'alpha': np.logspace(-3, 3, 13)}
+
+grid = GridSearchCV(Ridge(), param_grid, cv=RepeatedKFold(n_splits=10, n_repeats=5),
+                    return_train_score=True)
+grid.fit(X_train, y_train)
+```
+.center[
+![:scale 40%](images/ridge_alpha_triazine.png)
+]
+
+???
+The same grid search on triazines looks very different from Ames. With small alpha the training score is high and the validation score low: classic overfitting. As alpha grows the gap closes, the validation score peaks around alpha of 3, and with very large alpha both scores drop: underfitting. This is the complexity curve from Week 2, with alpha as the knob, running from right to left.
+
+---
+# Coefficient paths
+
+.center[
+![:scale 75%](images/ridge_coefficient_paths.png)
+]
+
+???
+Let us look inside the models with the regularization path. Plain least squares on this data gives large coefficients of opposite sign on related descriptors, which should make you suspicious of interpreting them; the Backup has the coefficient plots. Each line is one coefficient, and the x-axis is alpha on a log scale. As alpha grows, all coefficients shrink smoothly towards zero; for Ridge they approach zero but never reach it exactly. Some large coefficients collapse quickly once alpha passes a threshold, others stay stable over a wide range. Keep this picture in mind for Lasso, where paths hit zero exactly. A general lesson that the learning curves in the Backup confirm: the less data you have per feature, the more regularization matters.
+
+---
+# Lasso Regression
+
+`$$ \min_{w \in \mathbb{R}^p, b\in\mathbb{R}} \sum_{i=1}^n (w^T\mathbf{x}_i + b - y_i)^2 + \alpha ||w||_1 $$`
+
+- Shrinks w towards zero like Ridge
+
+- Sets some w exactly to zero - automatic feature selection!
+
+???
+Lasso replaces the squared L2 norm by the L1 norm, the sum of absolute values. It also shrinks coefficients, but in a different way: it sets many of them exactly to zero. A zero coefficient means the feature is not used, so Lasso does feature selection and fitting in one step, which can give smaller and more interpretable models. What we would really like to penalize is the number of non-zero coefficients; the next slides explain why we use L1 instead.
+
+---
+class: center
+# Understanding L1 and L2 Penalties
+
+![:scale 70%](images/l1l2ball.png)
+???
+A geometric view in two dimensions. The penalized problem is equivalent to minimizing the data-fitting term subject to a constraint on the norm of w. The L2 constraint region is a disk, the L1 region is a diamond whose corners lie on the axes.
+
+---
+class: center
+# Understanding L1 and L2 Penalties
+
+![:scale 70%](images/l1l2ball_intersect.png)
+???
+Now add the contour lines of a quadratic data-fitting term. The solution is where the smallest contour touches the constraint region. For the disk, that point is generally somewhere on the curve with both coordinates non-zero. For the diamond, the contours are much more likely to touch a corner, and at a corner one coefficient is exactly zero. In higher dimensions the diamond has many corners and edges, so many coefficients end up at zero.
+
+---
+# Grid-Search for Lasso
+```python
+param_grid = {'alpha': np.logspace(-5, 0, 10)}
+grid = GridSearchCV(Lasso(max_iter=100_000), param_grid, cv=10)
+grid.fit(X_train, y_train)
+
+print(grid.best_params_)
+print(grid.best_score_)
+```
+```
+{'alpha': 0.0017}
+0.163
+```
+
+???
+Lasso needs its own grid: its alpha is on a different scale from Ridge's, because scikit-learn's Lasso divides the squared error by twice the number of samples, and the default of one is far too large here. Raise `max_iter` so the coordinate descent solver converges. Older code often used `Lasso(normalize=True)`; that option was removed, and the replacement is an explicit `StandardScaler` in a pipeline. The triazine features are all in the range zero to one, so we use them directly. The best cross-validated R squared, 0.16, is better than Ridge's.
+
+---
+class: fit
+![:scale 90%](images/lasso_alpha_triazine.png)
+
+???
+Training and validation R squared as a function of alpha, with the number of non-zero coefficients on the right axis in black. As alpha grows, coefficients drop out one by one; from about alpha of 0.02 all of them are zero and the model predicts a constant. The best validation score is reached with only about a dozen features. Unlike Ridge, Lasso falls off a cliff when alpha is too large, so its grid needs more care.
+
+---
+class: fit
+.center[
+![:scale 60%](images/lasso_coefficients.png)
+]
+
+```python
+print(X_train.shape)
+np.sum(lasso.coef_ != 0)
+```
+```
+(139, 60)
+13
+```
+
+???
+The coefficients of the best Lasso model: 13 of the 60 are non-zero, the rest are exactly zero. We could drop 47 descriptors from the model without changing its predictions, which makes it cheaper and easier to discuss with a chemist. But be careful what you conclude, as the next slide shows.
+
+---
+class: spacious, fit
+
+# What goes wrong in practice
+
+- **Unstable selection:** of two correlated features, Lasso keeps one, somewhat arbitrarily. Refit on a bootstrap sample and the selected set changes
+- **"Zero" is not "irrelevant":** a dropped feature may be as predictive as a kept one
+- **Signs flip with alpha:** regularized coefficients are not causal effects
+- **Forgotten scaling:** without standardization, the penalty depends on the units of each feature
+- **alpha is not comparable** between `Ridge`, `Lasso` and `ElasticNet` (different scaling of the loss)
+
+???
+These are the mistakes I see most often in projects and papers. The lab has a short cell that refits Lasso on 50 bootstrap samples and plots how often each feature is selected; many features are selected in some resamples and not in others. If you need to report "important features", report selection stability, and remember that correlated features compete. Scaling is the silent killer: a model on unscaled data runs without error and quietly penalizes some features more than others. We return to feature importance properly in Week 9.
+
+---
+# Elastic Net
+
+- Combines benefits of Ridge and Lasso
+
+- two parameters to tune.
+
+
+`$$\min_{w \in \mathbb{R}^p, b\in\mathbb{R}} \sum_{i=1}^n (w^T\mathbf{x}_i + b - y_i)^2 + \alpha_1 ||w||_1 +  \alpha_2 ||w||^2_2 $$`
+
+???
+Elastic Net uses both penalties at once. The L1 part produces exact zeros, the L2 part stabilizes the solution when features are correlated: instead of picking one of a group of correlated features, Elastic Net tends to keep the group together with shared weights. It contains Ridge and Lasso as special cases, at the cost of a second parameter to tune. In practice it is often the best of the three.
+
+---
+# Grid-searching ElasticNet
+
+```python
+from sklearn.linear_model import ElasticNet
+param_grid = {'alpha': np.logspace(-4, -1, 10),
+              'l1_ratio': [0.01, .1, .5, .8, .9, .95, .98, 1]}
+
+grid = GridSearchCV(ElasticNet(max_iter=100_000), param_grid, cv=10)
+grid.fit(X_train, y_train)
+
+print(grid.best_params_)
+print(grid.best_score_)
+```
+```
+{'alpha': 0.0022, 'l1_ratio': 0.5}
+0.174
+```
+```python
+(grid.best_estimator_.coef_ != 0).sum()
+```
+```
+16
+```
+???
+scikit-learn parametrizes Elastic Net with an overall strength `alpha` and a mixing parameter `l1_ratio`: 1 is Lasso, 0 a ridge penalty, and because of a 1/(2n) factor on the data term these alphas are not comparable with `Ridge`'s. With two parameters, `GridSearchCV` tries all 80 combinations. For `l1_ratio` I use values close to zero, close to one, and a few in between; the interesting range is often near one. The best model mixes the two penalties equally, uses 16 of 60 features and slightly improves on Lasso. For expensive models, `ElasticNetCV` computes the whole path for each `l1_ratio` much faster than a generic grid search. Remember that the best CV score of 80 candidates is optimistic: on the test set this model scores about 0.10 (heat map of the search in Backup).
+
+---
+class: smaller
+# Tracking the regularization path in MLflow
+
+```python
+mlflow.set_experiment("week04-linear-models")
+with mlflow.start_run(run_name="regularization-path-triazines"):
+    for name, make_model in [("ridge", lambda a: Ridge(alpha=a)),
+                             ("lasso", lambda a: Lasso(alpha=a, max_iter=100_000))]:
+        for step, a in enumerate(np.logspace(-4, 2, 13)):
+            scores = cross_val_score(make_model(a), X_train, y_train, cv=cv)
+            with mlflow.start_run(run_name=f"{name}-alpha={a:.4g}", nested=True):
+                mlflow.log_params({"model": name, "alpha": a})
+                mlflow.log_metrics({"cv_r2_mean": scores.mean(), "cv_r2_std": scores.std()})
+            mlflow.log_metric(f"{name}_cv_r2", scores.mean(), step=step)
+    mlflow.log_figure(fig, "regularization_path.png")
+```
+
+???
+As in the previous weeks, we log what we try. Each alpha becomes a nested child run with its parameters and cross-validated metrics, and the parent run keeps the whole curve as a stepped metric plus the plot as an artifact. In the MLflow UI you can then sort the child runs by score, or plot `cv_r2_mean` against `alpha` across runs. The full cell, which also logs the number of non-zero coefficients, is in the lab. The habit matters more than the tool: six weeks from now you will not remember which alpha grid you used.
+
+---
+class: center, middle
+
+# Part 2: Linear Models for Classification, SVMs
+
+???
+We now switch to classification. The same ideas carry over: a linear prediction function, a loss, and a regularizer. What changes is the loss, and that change leads to logistic regression and support vector machines.
+
+---
+class: center, middle
+
+# Linear models for <strong>binary</strong> classification
+
+???
+We start with two classes, which makes the geometry easy to see, and then extend to several classes.
+
+---
+.center[
+![:scale 55%](images/linear_boundary_vector.png)
+]
+
+$$\hat{y} = \text{sign}(w^T \textbf{x} + b) = \text{sign}\left(\sum\limits_{i}w_ix_i + b\right)$$
+
+???
+All linear classifiers predict the same way: compute the same inner product as in regression and look at its sign. Positive means class +1, negative class -1. Geometrically, the decision boundary is a hyperplane, a line in two dimensions, and w is its normal vector, drawn in green here. Sometimes I drop b from the notation; you can always add a constant feature instead, as long as it is left out of the regularization. The algorithms differ in how they find w and b, and the key difference is how they measure mistakes on the training set.
+
+---
+class: fit2
+# Picking a loss?
+
+$$\hat{y} = \text{sign}(w^T \textbf{x} + b)$$
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}} \sum_{i=1}^n 1_{y_i \neq \text{sign}(w^T \textbf{x}_i + b)}$$`
+
+.center[
+![:scale 40%](images/binary_loss.png)
+]
+
+???
+The obvious loss is the number of misclassifications, the 0-1 loss in yellow. It is non-convex and discontinuous, and minimizing it is NP-hard in general. So we replace it with a convex upper bound defined on the decision function, the value of w transpose x plus b before taking the sign. The plot is for a point with true label +1. The hinge loss in teal and the log loss in blue are both convex, and both care not only whether a prediction is correct but how confidently it is correct.
+
+---
+class: fit
+# Logistic Regression
+
+
+.left-column[
+$$\log\left(\frac{p(y=1|x)}{p(y=-1|x)}\right) = w^T\textbf{x} + b$$
+
+$$p(y=1|\textbf{x}) = \frac{1}{1+e^{-w^T\textbf{x} -b }}$$
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}} \sum_{i=1}^n \log(\exp(-y_i(w^T \textbf{x}_i + b)) + 1)$$`
+
+
+$$\hat{y} = \text{sign}(w^T\textbf{x} + b)$$
+]
+.right-column[
+![:scale 90%](images/logit.png)]
+
+
+???
+Logistic regression models the log-odds of the positive class as a linear function. Solving for the probability gives the logistic sigmoid on the right, which squashes the decision function into the interval from zero to one. We fit w and b by maximum likelihood, which is the same as minimizing the log loss from the previous slide. Predicting the more probable class is the same as predicting by the sign of the decision function, because the sigmoid crosses one half exactly at zero. Despite its name, logistic regression is a classifier.
+
+---
+class: fit2
+# Penalized Logistic Regression
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\log(\exp(-y_i(w^T \textbf{x}_i + b )) + 1) + \frac{1}{2}||w||_2^2$$`
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\log(\exp(-y_i (w^T \textbf{x}_i + b)) + 1) + ||w||_1$$`
+
+- C is inverse to alpha: small C = strong regularization
+- scikit-learn: `LogisticRegression(C=..., l1_ratio=...)`; `l1_ratio=0` is L2 (default), `1` is L1, in between is elastic net; `C=np.inf` means no penalty
+
+???
+As in regression, we add an L2 or L1 penalty, with the same effects: shrinkage, and exact zeros for L1. The convention in scikit-learn is different, though: C multiplies the loss instead of alpha multiplying the penalty, so C is roughly one over alpha. Large C means little regularization. `LogisticRegression` is regularized by default with C equal to one, which surprises people coming from statistics packages. In recent scikit-learn versions the penalty type is chosen with `l1_ratio` and the old `penalty` argument is deprecated; for L1 or elastic net use `solver='saga'`. Both versions are convex, the L2 one is also smooth, and every training point contributes to the solution.
+
+---
+# Effect of regularization
+
+
+.center[
+![:scale 90%](images/logreg_regularization.png)
+]
+
+- Small C (a lot of regularization) limits the influence of individual points!
+
+???
+Coefficient plots for classification look just like the regression ones, so here is a different view of C. The dataset has two mislabeled-looking points: a red point among the blue ones and a blue point among the red ones. With large C, on the right, the boundary tilts to accommodate these outliers: each point can have a large influence. With small C, on the left, the influence of any single point is limited and the boundary follows the bulk of the data. One way to see regularization: it bounds how much any single training point can move the model.
+
+---
+class: fit
+# Max-Margin and Support Vectors
+
+.center[
+![:scale 75%](images/max_margin.png)
+]
+
+???
+Now to support vector machines. All three lines separate the training data perfectly, so the 0-1 loss cannot tell them apart. The idea of the SVM is to prefer the boundary with the widest margin, the widest band around it that contains no points. Intuitively, a wide margin leaves the most room for noise in new data points. Ask the class which of the three lines they would choose.
+
+---
+class: fit2
+# (soft margin) linear SVM
+
+.larger[
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\max(0,1-y_i(w^T \textbf{x}_i + b)) + ||w||_2^2$$`
+
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\max(0,1-y_i(w^T \textbf{x}_i + b))+ ||w||_1$$`
+]
+
+$$\text{Within margin} \Leftrightarrow y_i(w^T x_i  + b)< 1 \qquad \text{Smaller } w \Rightarrow \text{larger margin}$$
+
+???
+The linear SVM uses the hinge loss: zero if a point is on the correct side with a decision value of at least one, and linear otherwise. The margin has width proportional to one over the norm of w, so the penalty on w is what makes the margin wide; without it, the "one" in the hinge loss would be meaningless because we could just scale w up. Points outside the margin on the correct side have zero loss and do not influence the solution at all. The points on or inside the margin are the support vectors. Both versions are convex but not smooth, which in practice is not a problem.
+
+---
+class: center
+
+# Max-Margin and Support Vectors
+
+.left-column[
+![:scale 80%](images/max_margin_C_0.1.png)
+]
+.right-column[
+![:scale 80%](images/max_margin_C_1.png)
+]
+
+???
+The same data with C of 0.1 and C of 1. Support vectors are circled, the arrow is w. With smaller C there is more weight on keeping w short, so w is shorter and the margin wider, and more points fall inside the margin, giving 11 support vectors. With C of 1, w is longer, the margin narrower, and only 3 points are support vectors. More regularization means more points share the influence on the solution, which matches what we saw for logistic regression.
+
+---
+class: center, fit
+# Logistic Regression vs SVM
+.compact[
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\log(\exp(-y_i(w^T \textbf{x}_i+b)) + 1) + ||w||_2^2$$`
+`$$\min_{w \in ℝ^{p}, b \in \mathbb{R}}C \sum_{i=1}^n\max(0,1-y_i(w^T \textbf{x}_i + b)) + ||w||_2^2$$`
+
+![:scale 35%](images/binary_loss.png)
+]
+???
+Side by side, logistic regression and the linear SVM differ only in the loss: the smooth log loss versus the hinge loss. The two curves are close for misclassified points and differ mainly for confidently correct points, where the hinge loss is exactly zero and the log loss only approaches zero. In practice, with tuned C, their accuracy is usually very similar.
+
+---
+# SVM or LogReg?
+
+.center[
+![:scale 80%](images/svm_or_lr.png)
+]
+
+- Need compact model or believe solution is sparse? Use L1
+
+???
+So which one should you use? If you need probability estimates, as in our tumour example, use logistic regression: its probabilities are often reasonably calibrated, and we will check calibration properly in Week 7. If you only need a label, try both and pick by cross-validation; the difference is usually small. If you want a compact model or believe only a few features matter, use the L1 penalty with either.
+
+---
+class: center, middle
+
+# Multiclass classification
+
+
+???
+So far two classes. There are two ways to handle more: reduce the problem to several binary problems, which works for any binary classifier, or use a model with a native multiclass formulation, which logistic regression has.
+
+---
+class: spacious
+
+# One vs Rest (OvR)
+
+- One binary classifier per class: class $i$ against all other classes
+- For 4 classes: 1v{2,3,4}, 2v{1,3,4}, 3v{1,2,4}, 4v{1,2,3}
+- Each trained on all the data
+- Predict the class with the highest score:
+
+$$\hat{y} = \text{arg}\max_{i \in Y} \textbf{w}^T_i\textbf{x} + b_i$$
+
+???
+One-vs-rest is the simplest reduction. For each class we train a binary classifier separating it from all other classes, so we get one coefficient vector and one intercept per class. To predict, we evaluate all of them and pick the class whose classifier gives the highest decision value. It is a heuristic, since the binary classifiers are trained independently and their scores are not calibrated against each other, but it works well in practice.
+
+---
+class: spacious, fit
+.left-column[
+## One vs Rest
+- n_classes classifiers
+- trained on imbalanced datasets of original size
+- Retains some uncertainty?
+![:scale 80%](images/ovr_boundaries.png)
+]
+
+.right-column[
+## One vs One
+- n_classes * (n_classes - 1)/2  classifiers
+- trained on balanced subsets
+- No uncertainty propagated
+![:scale 80%](images/ovo_boundaries.png)
+]
+???
+One-vs-one trains a classifier for every pair of classes, using only those two classes, and predicts by majority vote. To summarize: OvR trains fewer classifiers, each on the full data but with an imbalanced split of one class against the rest, and it keeps some notion of confidence. OvO trains more classifiers on smaller, balanced subsets, which can be faster for kernel methods whose cost grows superlinearly with the number of samples, but it discards confidence. Both are general reductions that work with any binary classifier, not only linear ones.
+
+---
+class: fit2
+# Multinomial Logistic Regression
+
+Probabilistic multi-class model:
+
+`$$p(y=i|x) = \frac{e^{\textbf{w}_i^T\textbf{x} + b_i}}{\sum_{j=1}^k e^{\textbf{w}_j^T\textbf{x} + b_j}}$$`
+
+`$$\min_{w \in ℝ^{pk}, b \in \mathbb{R}^k} -\sum_{i=1}^n \log(p(y=y_i|x_i, w, b))$$`
+
+$$\hat{y} = \text{arg} \max_{i=1,...,k} \textbf{w}^T_i\textbf{x} + b_i$$
+
+- Same prediction rule as OvR !
+
+???
+Logistic regression has a natural multiclass version. Each class has its own linear score, and the softmax function turns the scores into probabilities that are positive and sum to one. All coefficient vectors are fitted jointly by maximum likelihood, rather than independently as in OvR. The prediction rule is the same as in OvR, the class with the highest score, but the probabilities now come from one coherent model. You will meet the softmax again in Week 6 as the output layer of a neural network classifier.
+
+---
+class: some-space
+
+# In scikit-learn
+
+- `LogisticRegression`: multinomial (softmax) for more than two classes; the `multi_class` option was removed
+- `LinearSVC`: one-vs-rest; `SVC`: one-vs-one internally
+- Explicit reductions for any estimator: `OneVsRestClassifier`, `OneVsOneClassifier`
+- `clf.decision_function` = $w^Tx + b$
+- `logreg.predict_proba`
+- `SVC(probability=True)`: slow, internal cross-validation, rarely worth it
+
+???
+In current scikit-learn, `LogisticRegression` always fits the multinomial model when there are more than two classes; older code that sets `multi_class` will now fail. If you want one-vs-rest explicitly, wrap the estimator in `OneVsRestClassifier`. `LinearSVC` uses one-vs-rest and kernel `SVC` uses one-vs-one. `predict_proba` gives an array of shape samples by classes whose rows sum to one. `SVC(probability=True)` fits an extra calibration model with internal cross-validation: it is slow and the probabilities are often not better than a proper calibration step, which we discuss in Week 7. If you need probabilities, start with logistic regression.
+
+---
+class: smaller
+
+# Multi-Class in Practice
+
+```python
+iris = load_iris()
+logreg = LogisticRegression(max_iter=1000).fit(iris.data, iris.target)
+linearsvm = LinearSVC().fit(iris.data, iris.target)
+print(logreg.coef_.shape, linearsvm.coef_.shape)
+```
+```
+(3, 4) (3, 4)
+```
+.left-column[
+```python
+logreg.coef_
+```
+```
+array([[-0.42 ,  0.967, -2.519, -1.084],
+       [ 0.531, -0.315, -0.203, -0.943],
+       [-0.112, -0.652,  2.722,  2.028]])
+```
+]
+.right-column[
+![:scale 100%](images/multiclass_barchart.png)
+(after scaling the data, without intercept)
+]
+
+???
+On iris, with 150 flowers, 4 features and 3 classes, both multinomial logistic regression and the one-vs-rest linear SVM store a coefficient array of shape classes by features. The shapes match, but the meaning differs: the SVM rows are three independent binary classifiers, the logistic regression rows are jointly fitted softmax scores. The bar chart shows the logistic regression coefficients after standardizing: large petal length and width favor virginica, large sepal width favors setosa. For a linear model the whole learned function fits on one slide, which is a real advantage over the models of the coming weeks.
+
+---
+class: center, middle
+
+# Kernel SVMs
+
+???
+Linear models can only draw hyperplanes. Kernel SVMs keep the convex optimization problem of the linear SVM but produce non-linear decision boundaries.
+
+---
+class: spacious
+
+# Motivation
+
+- Go from linear models to more powerful nonlinear ones.
+- Keep convexity (ease of optimization).
+- Generalize the concept of feature engineering.
+
+???
+The motivation: we want non-linear models, but we want to keep a convex problem with a unique solution, which neural networks, for example, do not have. The way there is to generalize feature engineering. Instead of designing features, such as polynomials, we design a similarity function between data points, the kernel. A polynomial kernel does essentially the same thing as polynomial features; the Backup compares the two explicitly.
+
+---
+class: spacious
+
+# Introducing Kernels
+
+
+$$\hat{y} = \text{sign}\left(\sum_i^{n}\alpha_i (\mathbf{x}_i^T  \mathbf{x})\right) \longrightarrow \hat{y} = \text{sign}\left(\sum_i^{n}\alpha_i (\phi(\mathbf{x}_i)^T  \phi(\mathbf{x}))\right) $$
+
+$$ \phi(\mathbf{x}_i)^T \phi( \mathbf{x}_j) \longrightarrow k(\mathbf{x}_i,  \mathbf{x}_j) $$
+
+k positive definite, symmetric $\Rightarrow$ there exists a $\phi$! (possibly $\infty$-dim)
+
+
+???
+A result from optimization theory, the representer theorem, says the optimal SVM weight vector is a weighted sum of the training points, with non-zero weights (dual coefficients, bounded by C) only for the support vectors; the derivation and a worked example are in Backup. So the prediction needs only inner products between support vectors and the new point, and if we first map the data with a feature function phi, only inner products of mapped points. Both training and prediction only ever need inner products of mapped points. So we can replace the inner product by a function k of two points, the kernel, and never compute phi explicitly. Mercer's theorem says that any symmetric positive definite kernel corresponds to an inner product in some feature space, possibly infinite-dimensional. That is the kernel trick: we design a similarity function instead of a feature map.
+
+---
+class:spacious
+
+# Kernels in Practice
+
+- Dual coefficients less interpretable
+- Long runtime for "large" datasets (100k samples)
+- Real power in infinite-dimensional spaces: rbf!
+- Rbf is "universal kernel" - can learn (aka overfit) anything.
+- Scale up with kernel approximation: `Nystroem`, `RBFSampler` + a linear model
+
+???
+In practice: dual coefficients are weights on training points, which is harder to interpret than weights on features. Training becomes slow beyond some tens of thousands of samples. The real strength is the RBF kernel, which corresponds to an infinite-dimensional feature space and is universal, meaning it can approximate any decision boundary and therefore also overfit any training set, like kNN, trees or neural networks. For larger data, approximate the kernel with an explicit random feature map such as `Nystroem` and fit a linear model on top; on the digits data in the lab this matches the exact kernel SVM. For large tabular datasets today, gradient boosting, next week's topic, is usually the stronger default.
+
+---
+class:spacious
+
+# Preprocessing
+
+- Kernels use inner products or distances.
+- Scale your data: `StandardScaler` or `MinMaxScaler`, inside the pipeline
+- Gamma parameter in RBF directly relates to scaling
+of data and n_features - the default `gamma='scale'` is `1/(X.var() * n_features)`
+
+???
+Most kernels are built on inner products or distances in the original space, so feature scaling is essential, for the same reason as for kNN in Week 2. The default parameters of `SVC` are designed for standardized data: with standardized features the default `gamma='scale'` is simply one over the number of features. On unscaled data the defaults can give terrible results, and the model will not warn you. Put the scaler in the pipeline so that it is fitted on the training folds only.
+
+---
+class: fit
+# Parameters for RBF Kernels
+
+- Regularization parameter C is limit on alphas
+(for any kernel)
+- Gamma is bandwidth: $k_\text{rbf}(\mathbf{x}, \mathbf{x}') = \exp(-\gamma||\mathbf{x} -\mathbf{x}'||^2)$
+
+
+.center[
+![:scale 85%](images/svm_gamma.png)
+]
+
+???
+The RBF SVM has two parameters, both controlling complexity. C bounds the dual coefficients, that is, the influence of each point. Gamma is the inverse width of the kernel: the plot shows the kernel value as a function of the distance between two points. Small gamma means a wide kernel, so each point influences a large region and the decision function is smooth. Large gamma means a narrow kernel, each point only influences its immediate neighborhood, and the model behaves more like nearest neighbors. Both parameters should be tuned together.
+
+---
+.center[
+![:scale 85%](images/svm_c_gamma.png)
+]
+
+???
+A grid of RBF SVMs on a small two-class dataset, with C increasing from top to bottom and gamma increasing from left to right; support vectors are circled. Top left, small C and small gamma, is the simplest model: almost every point is a support vector and the boundary is nearly linear. Increasing C lets individual points matter more, and fewer points remain support vectors. Increasing gamma adds curvature, and at the far right each point gets a small island of its own class, which clearly overfits. Several combinations of C and gamma give similarly good boundaries, because the two parameters trade off against each other.
+
+---
+class: fit
+```python
+from sklearn.datasets import load_digits
+digits = load_digits()
+```
+.center[
+![:scale 65%](images/digits_images.png)
+]
+
+???
+A real example: the digits dataset, 1,797 handwritten digits scanned as 8 by 8 grayscale images, so 64 features with values from 0 to 16 and ten classes. It is small enough to grid-search a kernel SVM in seconds, and it is a good case for the RBF kernel, since similar images should have similar labels. The Backup shows what the old default `gamma='auto'` does on these raw pixel values (56% accuracy): state important parameters explicitly, because defaults change between versions.
+
+---
+class: spacious, fit
+
+# Try it 2: predict, then run (10 min)
+
+Breast cancer data, 10-fold CV accuracy on the training set. **Write down your ranking first:**
+
+1. `LogisticRegression()` on raw features
+2. `LogisticRegression()` after `StandardScaler`
+3. `SVC()` on raw features
+4. `SVC()` after `StandardScaler`
+
+Then run section "Try it 2" in `lab.ipynb`. Which result surprised you? Tune `C` for (2): would you call its largest coefficients "causes of malignancy"?
+
+???
+Give the class two minutes to commit to a ranking on paper before anyone runs code; the point is to test intuition. The results in the lab are roughly: raw logistic regression 0.96, scaled 0.98, raw SVC 0.92, scaled SVC 0.99. The raw SVC suffers most because RBF distances are dominated by the few features measured in the thousands, such as worst area. Close by discussing the last question: coefficients of correlated measurements are associations conditional on everything else, not causal effects, and their signs can change with C.
+
+---
+# Grid-Searching Parameters
+
+```python
+param_grid = {'svc__C': np.logspace(-3, 2, 6),
+              'svc__gamma': np.logspace(-3, 2, 6) / X_train.shape[1]}
+param_grid
+```
+
+```
+{'svc__C': array([0.001, 0.01, 0.1, 1., 10., 100.]),
+ 'svc__gamma': array([0.000016, 0.000156, 0.001563, 0.015625, 0.15625, 1.5625])}
+```
+
+```python
+grid = GridSearchCV(scaled_svc, param_grid=param_grid, cv=10, return_train_score=True)
+grid.fit(X_train, y_train)
+```
+???
+To tune, search both C and gamma on logarithmic grids. I express the gamma grid relative to one over the number of features, the natural scale after standardization, so the default value sits in the middle of the grid. `GridSearchCV` then tries all 36 combinations with 10-fold cross-validation. For larger grids or slower models, `HalvingGridSearchCV` or a Bayesian optimizer such as Optuna is more efficient; we cover those in Week 8.
+
+---
+# Grid-Searching Parameters
+
+.center[
+![:scale 95%](images/svm_c_gamma_heatmap.png)
+]
+
+???
+Validation and training accuracy as heat maps, C on the vertical axis and gamma on the horizontal. With ten balanced classes, chance is 10%, and badly chosen parameters give exactly that: small C with small gamma underfits completely. The best region is a diagonal band, around C of 10 and gamma of 0.0016 here, reaching 98% validation accuracy: when you decrease gamma you can compensate by increasing C. On the right edge, very large gamma, training accuracy stays perfect while validation accuracy drops, which is overfitting. If the optimum were on the edge of the grid, we would extend it.
+
+---
+class: smaller
+
+# Comparing models in MLflow
+
+```python
+with mlflow.start_run(run_name="digits-linear-vs-kernel"):
+    for name, model in models.items():
+        scores = cross_val_score(model, X_train, y_train, cv=cv)
+        with mlflow.start_run(run_name=name, nested=True):
+            mlflow.log_param("model", name)
+            mlflow.log_metrics({"cv_accuracy_mean": scores.mean(),
+                                "cv_accuracy_std": scores.std(), "cv_seconds": elapsed})
+```
+```
+logreg_C1          0.973 +/- 0.013
+logreg_C0.01       0.943 +/- 0.015
+linear_svc_C1      0.957 +/- 0.020
+svc_rbf_default    0.980 +/- 0.011
+svc_rbf_tuned      0.982 +/- 0.007
+```
+
+???
+Finally, the comparison we care about, logged as one parent run with a child run per model: linear models against kernel SVMs on digits, with accuracy and fit time. The RBF SVM is best, but the tuned version is only marginally better than the default, and the difference to logistic regression is about one standard deviation of the fold scores. In the MLflow UI, select the child runs and use Compare to plot accuracy against time. Ask: which model would you deploy, and what else would you want to know before deciding?
+
+---
+class: spacious, fit
+
+# Summary
+
+- Linear models: same prediction rule, different loss and penalty
+- Ridge shrinks, Lasso selects, Elastic Net does both; tune alpha / C on a log grid
+- Scale features for any penalized or kernel model; log-transform skewed targets
+- Logistic regression when you need probabilities; linear SVM otherwise comparable
+- Kernel SVMs: non-linear and convex, but scale poorly with n_samples
+- Next week: trees, random forests and gradient boosting
+
+???
+To wrap up: the core recipe of loss plus penalty covers everything we did today. The practical rules are to scale features, tune the regularization strength on a logarithmic grid, and be careful when interpreting coefficients. Next week we move to tree ensembles, which need no scaling, handle non-linearities and interactions automatically, and are the strongest default for tabular data. Please finish both "Try it" sections of the lab before then; questions now or on the course forum.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (28 slides); they are not needed for the homework or the project.
+
+---
+.padding-top[
+.left-column[
+![:scale 100%](images/ridge_alpha_search.png)
+]
+.right-column[
+![:scale 100%](images/ridge_alpha_search_cv_runs.png)
+]
+]
+
+???
+On the right are the 50 individual folds of the repeated cross-validation, training scores in blue and validation scores in red. The mean curve on the left hides how much individual splits vary: the spread between folds is larger than the effect of changing alpha. This is why we repeat cross-validation and why you should be careful about declaring a winner from a small difference in mean score. We will make this rigorous with statistical comparisons in Week 8.
+
+---
+class: fit2
+# Plotting coefficient values (LR)
+
+```python
+lr = LinearRegression().fit(X_train, y_train)
+plt.scatter(range(X_train.shape[1]), lr.coef_,
+            c=np.sign(lr.coef_), cmap='bwr_r')
+```
+.center[
+![:scale 55%](images/lr_coefficients_large.png)
+]
+
+???
+Let us look inside the models. These are the least squares coefficients, colored by sign. Some descriptors in this dataset are exactly or nearly collinear, so least squares has no unique solution. Current scikit-learn solves it with a least-squares routine that returns the minimum-norm solution among all minimizers, which is already a mild form of implicit regularization; older setups returned enormous coefficients of opposite sign that cancelled each other. Either way, several large coefficients of opposite sign on related descriptors should make you suspicious of interpreting them.
+
+---
+class: fit2
+# Ridge Coefficients
+
+```python
+ridge = grid.best_estimator_
+plt.scatter(range(X_train.shape[1]), ridge.coef_,
+            c=np.sign(ridge.coef_), cmap="bwr_r")
+```
+.center[
+![:scale 55%](images/ridge_coefficients.png)
+]
+
+???
+The Ridge coefficients with the tuned alpha are much smaller in magnitude and less extreme. Ridge spreads the weight among correlated features instead of letting two of them cancel each other out. Compare the y-axis ranges of this plot and the previous one.
+
+---
+```python
+ridge100 = Ridge(alpha=100).fit(X_train, y_train)
+ridge01 = Ridge(alpha=.1).fit(X_train, y_train)
+plt.figure(figsize=(8, 4))
+plt.plot(ridge01.coef_, 'o', label="alpha=.1")
+plt.plot(ridge.coef_, 'o', label=f"alpha={ridge.alpha:.2f}")
+plt.plot(ridge100.coef_, 'o', label="alpha=100")
+plt.legend()
+```
+
+.center[
+![:scale 60%](images/ridge_coefficients_alpha.png)
+]
+
+???
+Three values of alpha on one plot, with the feature index on the x-axis. Increasing alpha shrinks all coefficients towards zero, but not uniformly. Look for features whose coefficient changes sign between alpha of 0.1 and alpha of 100: the direction of the "effect" depends on how much we regularize. That is a strong warning against reading coefficients of a regularized model as causal effects.
+
+---
+# Learning Curves
+
+![:scale 90%](images/ridge_learning_curve.png)
+
+???
+A learning curve shows training and validation scores as the training set grows, here for three values of alpha. With little data, regularization helps a lot: the weakly regularized model has a large gap between training and validation. As the training set grows, the curves get closer and the differences between alphas shrink. The general lesson: the less data you have per feature, the more regularization matters. Ask: which curve would you extrapolate to be best with ten times more data?
+
+---
+class: center
+# Comparing unit balls
+
+![:scale 70%](images/l1l2_elasticnet.png)
+
+???
+The Elastic Net unit ball sits between the disk and the diamond. Its sides are curved, like the L2 ball, but it still has corners on the axes, like the L1 ball. The corners are what allow exact zeros; the curvature is what makes the solution stable under correlated features.
+
+---
+# Parametrization in scikit-learn
+
+`$$\min_{w, b} \frac{1}{2n}\sum_{i=1}^n (w^T\mathbf{x}_i + b - y_i)^2 + \alpha \eta ||w||_1 +  \frac{\alpha (1 - \eta)}{2} ||w||^2_2 $$`
+
+Where $\eta$ is the relative amount of l1 penalty (`l1_ratio` in the code).
+???
+scikit-learn parametrizes Elastic Net with an overall strength alpha and a mixing parameter `l1_ratio`. With `l1_ratio=1` you get Lasso, with `l1_ratio=0` a ridge penalty, though for pure L2 the dedicated `Ridge` class is faster and more accurate. Note the factor 1/(2n) on the data term, which is why alpha values here are not comparable with `Ridge`'s alpha. Also do not set alpha to zero in Ridge or Lasso to get least squares: the solvers are not designed for it, use `LinearRegression` instead.
+
+---
+class: smaller, fit2
+# Analyzing grid-search results
+```python
+import pandas as pd
+res = pd.pivot_table(pd.DataFrame(grid.cv_results_),
+    values='mean_test_score', index='param_alpha', columns='param_l1_ratio')
+```
+.center[
+![:scale 60%](images/elasticnet_search.png)
+]
+???
+To inspect a two-dimensional search, pivot `cv_results_` into a table with one parameter per axis and plot it as a heat map. There is a diagonal band of good settings: a larger `l1_ratio` needs a smaller alpha. If the best value sits on the edge of the grid, extend the grid. And remember that the best cross-validation score of 80 candidates is an optimistic estimate: on the test set this model scores about 0.10. For an honest comparison, use a held-out test set or nested cross-validation, which we cover in Week 8.
+
+---
+# One vs Rest Prediction
+
+.center[
+![:scale 80%](images/ovr_boundaries.png)
+]
+
+
+???
+These are the resulting multiclass regions. They are not simply the regions cut out by the three lines, because the arg max also uses the magnitude of the decision values, that is, the length of each normal vector. You can read this as a crude measure of confidence attached to each binary classifier.
+
+---
+class: some-space
+
+# One vs One (OvO)
+
+- One binary classifier per pair of classes: 1v2, 1v3, 1v4, 2v3, 2v4, 3v4
+- n * (n-1) / 2 classifiers, each trained only on the two classes involved
+- Predict: every classifier votes, the class with most votes wins
+- Again, a heuristic
+
+???
+One-vs-one trains a classifier for every pair of classes, using only the data of those two classes. With k classes that is k times k minus one over two classifiers, so it grows quadratically, but each one is trained on a smaller, balanced subset. To predict, each pairwise classifier votes, and the class with the most votes wins, with ties broken by a fixed rule. Like OvR, it has no strong theoretical justification but works well.
+
+---
+class: center
+# One vs One Prediction
+
+
+![:scale 80%](images/ovo_boundaries.png)
+
+
+???
+The resulting regions follow the pairwise boundaries directly, because voting only uses which side of each line a point is on, not how far. That makes the geometry easy to see but discards the confidence information. In the small triangle in the middle each class gets one vote, and the tie is broken in favor of the first class.
+
+---
+class: some-space, fit
+
+# Computational considerations (all linear models)
+
+- Don't use `SVC(kernel='linear')`, use `LinearSVC` (or `LogisticRegression`)
+- `LinearSVC(dual='auto')` (default) picks primal or dual from the data shape
+- `LogisticRegression`: default `lbfgs` is fine for small and medium data; `saga` for L1 / elastic net and large sparse data
+- For `n_features >> n_samples` with L1: `LassoLars` / `lars_path`
+- For small n_samples (< 10,000), don't worry
+- `SGDClassifier` / `SGDRegressor` for data that does not fit in memory (`partial_fit`)
+
+???
+Some practical advice on speed. Kernel `SVC` with a linear kernel solves a harder problem than necessary; `LinearSVC` and `LogisticRegression` use specialized solvers that scale much better. Primal versus dual: the dual has one variable per sample, the primal one per feature, so the dual is attractive when there are many more features than samples; `LinearSVC` now chooses automatically. For large or sparse data, `saga` supports all penalties. `SGDClassifier` fits linear models with stochastic gradient descent and can learn from data in chunks. For the datasets in this course, any of these will run in seconds, so pick by modeling needs first.
+
+---
+# Reformulate Linear Models
+
+.smaller[
+- Optimization Theory
+
+$$ w = \sum_{i=1}^n \alpha_i \mathbf{x}_i $$
+
+(alpha are dual coefficients. Non-zero for support vectors only)
+
+
+$$ \hat{y} = \text{sign}(w^T \mathbf{x})  \Longrightarrow   \hat{y} = \text{sign}\left(\sum_i^{n}\alpha_i (\mathbf{x}_i^T  \mathbf{x})\right) $$
+
+$$ |\alpha_i| \leq C$$
+
+]
+
+???
+A result from optimization theory, the representer theorem, says that the optimal w of the linear SVM is a linear combination of the training points. The weights alpha are called dual coefficients, and they are non-zero only for the support vectors. Substituting this into the prediction function, the prediction depends on the data only through inner products between training points and the new point. The dual coefficients are also bounded by C in absolute value, which is the precise version of "C limits the influence of each point". One small caveat: in this dual notation the label signs are folded into the alphas.
+
+---
+class: smaller
+# Understanding Dual Coefficients
+
+```python
+linear_svm.coef_
+```
+```
+array([[0.139, 0.06, -0.201, 0.048, 0.019]])
+```
+$$ y = \text{sign}(0.139 x_0 + 0.06 x_1 - 0.201 x_0^2 + 0.048 x_0 x_1 + 0.019 x_1^2) $$
+
+```python
+linear_svm.dual_coef_
+#array([[-0.03, -0.003, 0.003, 0.03]])
+linear_svm.support_
+#array([1, 26, 42, 62], dtype=int32)
+```
+.smallest[
+`$$ y = \text{sign}(-0.03 \phi(\mathbf{x}_1)^T \phi(\mathbf{x}) - 0.003 \phi(\mathbf{x}_{26})^T \phi(\mathbf{x})  +0.003 \phi(\mathbf{x}_{42})^T \phi(\mathbf{x}) + 0.03 \phi(\mathbf{x}_{62})^T \phi(\mathbf{x})) $$`
+]
+
+???
+The linear SVM on the expanded features has five primal coefficients, one per feature, and the prediction is the sign of their weighted sum. The same model can be written with dual coefficients: only four training points, indices 1, 26, 42 and 62, are support vectors, and the prediction is a weighted sum of inner products between those four points and the new point, all in the expanded feature space. Both forms give identical predictions; they are two views of one model.
+
+---
+# Scaling and Default Params
+
+.smaller[
+```
+gamma : {'scale', 'auto'} or float, default='scale'
+  if gamma='scale' (default) is passed then it uses 1 / (n_features * X.var()) as value of gamma,
+  if 'auto', uses 1 / n_features
+```
+```python
+print('auto', np.mean(cross_val_score(SVC(gamma='auto'), X_train, y_train, cv=10)))
+print('scale', np.mean(cross_val_score(SVC(gamma='scale'), X_train, y_train, cv=10)))
+scaled_svc = make_pipeline(StandardScaler(), SVC())
+print('pipe', np.mean(cross_val_score(scaled_svc, X_train, y_train, cv=10)))
+```
+```
+auto 0.563
+scale 0.987
+pipe 0.977
+```
+```python
+gamma = (1. / (X_train.shape[1] * X_train.var()))
+print(np.mean(cross_val_score(SVC(gamma=gamma), X_train, y_train, cv=10)))
+```
+```
+0.987
+```
+]
+
+???
+The old default, `gamma='auto'`, is one over the number of features, which only makes sense for standardized data. On raw pixel values from 0 to 16 it gives 56% accuracy. The current default, `gamma='scale'`, also divides by the overall variance of the data and gets 98.7%; the last cell shows that this is exactly what it computes. Scaling each feature with `StandardScaler` gives 97.7%. Digits is unusual because all pixels share one scale, so a global variance works well; for typical tabular data with different units, per-feature scaling is the safe choice. The lesson for old code and tutorials: defaults change between versions, so state important parameters explicitly.
+
+---
+# Understanding L1 and L2 Penalties
+.wide-left-column[
+![:scale 100%](images/l2_l1_l0.png)
+]
+
+.narrow-right-column[
+.smaller[
+`$$ \ell_2(w) = \sqrt{\sum_i w_i ^ 2}$$`
+`$$ \ell_1(w) = \sum_i |w_i|$$`
+`$$ \ell_0(w) = \sum_i 1_{w_i != 0}$$`
+]]
+???
+The L0 "norm" counts non-zero entries. It is exactly what we want for feature selection, but it is discontinuous and non-convex, and minimizing it is combinatorially hard. The L1 norm is the closest convex relative: not differentiable at zero, but still efficient to optimize. The squared L2 penalty grows quadratically, so it punishes large coefficients heavily and small ones hardly at all, which is why it rarely pushes anything all the way to zero.
+
+---
+# Understanding L1 and L2 Penalties
+
+.wide-left-column[
+![:scale 100%](images/l1_kink.png)
+]
+.narrow-right-column[
+.padding-top[
+.smaller[
+`$ f(x) = (2 x - 1)^2 $`
+
+`$ f(x) + L2 = (2 x - 1)^2 + \alpha x^2$`
+
+`$ f(x) + L1= (2 x - 1)^2 + \alpha |x|$`
+]]]
+???
+A one-dimensional example: one coefficient x and a quadratic data-fitting term with its minimum at 0.5, in blue. Adding the L2 penalty, in orange, moves the minimum towards zero but not to zero. Adding the L1 penalty, in green, creates a kink at zero, and for a large enough alpha the minimum sits exactly at the kink. That kink is the mechanism behind exact zeros.
+
+---
+# One vs Rest Prediction
+
+.center[
+![:scale 80%](images/ovr_lines.png)
+]
+
+
+???
+An illustration with three classes in two dimensions. Each line is the decision boundary of one binary classifier, colored by the class it separates from the rest.
+
+---
+class: center
+
+# One vs One Prediction
+
+![:scale 80%](images/ovo_lines.png)
+
+
+???
+The same three classes with one-vs-one. Each boundary is drawn with a solid and a dashed segment in the colors of the two classes it separates. The points of the third class are not used by that classifier at all. With three classes we happen to get three classifiers; with more classes there are more classifiers than classes.
+
+---
+class: fit
+# Examples of Kernels
+
+
+$$k_\text{linear}(\mathbf{x}, \mathbf{x}') = \mathbf{x}^T\mathbf{x}'$$
+
+$$k_\text{poly}(\mathbf{x}, \mathbf{x}') = (\mathbf{x}^T\mathbf{x}' + c) ^ d$$
+
+$$k_\text{rbf}(\mathbf{x}, \mathbf{x}') = \exp(-\gamma||\mathbf{x} -\mathbf{x}'||^2)$$
+
+$$k_\text{sigmoid}(\mathbf{x}, \mathbf{x}') = \tanh\left(\gamma \mathbf{x}^T\mathbf{x}'  + r\right)$$
+
+`$$k_\cap(\mathbf{x}, \mathbf{x}')= \sum_{i=1}^p \min(x_i, x'_i)$$`
+
+- If $k$ and $k'$ are kernels, so are `$k + k', kk', ck', ...$`
+
+???
+Commonly used kernels: the linear kernel gives back the linear SVM. The polynomial kernel raises the shifted inner product to a power d. The RBF or Gaussian kernel is a similarity that decays with the squared distance between points and is by far the most used. The sigmoid kernel is not positive definite for all parameters, so treat it with care. The intersection kernel is used for histograms. Sums, products and positive multiples of kernels are again kernels, and domain-specific kernels exist for strings, graphs and sets, which is one reason kernels are still used in areas like chemistry and biology.
+
+---
+# Polynomial Kernel vs Features
+
+
+$$ k_\text{poly}(\mathbf{x}, \mathbf{x}') = (\mathbf{x}^T\mathbf{x}' + c) ^ d $$
+
+Primal vs Dual Optimization<br /><br />
+
+Explicit polynomials $\rightarrow$ compute on `n_samples * n_features ** d`
+
+Kernel trick $\rightarrow$ compute on kernel matrix of shape `n_samples * n_samples`
+<br /><br />
+For a single feature:
+
+$$ (x^2, \sqrt{2}x, 1)^T (x'^2, \sqrt{2}x', 1) = x^2x'^2 + 2xx' + 1 = (xx' + 1)^2 $$
+
+???
+Explicit polynomial features of degree d create on the order of p to the d features, which quickly explodes: 1000 features and degree 5 is hopeless. With the kernel trick, we only need the n by n matrix of kernel values between training points, whatever the degree. For a single feature you can check that the degree-2 kernel equals the inner product of the features x squared, square root of two times x, and one. So the kernel is the same as explicit polynomial features, up to the scaling factors of the terms.
+
+---
+# Poly kernels vs explicit features
+
+.smaller[
+```python
+poly = PolynomialFeatures(include_bias=False)
+X_poly = poly.fit_transform(X)
+print(X.shape, X_poly.shape)
+print(poly.get_feature_names_out())
+```
+```
+(100, 2) (100, 5)
+['x0' 'x1' 'x0^2' 'x0 x1' 'x1^2']
+```
+]
+
+.center[
+![:scale 70%](images/poly_kernel_features.png)
+]
+
+???
+A toy two-class problem that is not linearly separable. On the right, we expand the two features to five degree-2 features and fit a linear SVM. On the left, we fit an SVM with a degree-2 polynomial kernel on the original two features. The decision boundaries are very similar; the small differences come from the square-root-of-two factors and from the different default regularization scale. For the RBF kernel no finite expansion exists, which is where kernels really add something.
+
+---
+class: fit
+# With Kernel
+`$$y = \text{sign}\left(\sum_i^{n}\alpha_i k(\mathbf{x}_i,  \mathbf{x})\right) $$`
+
+```python
+poly_svm.support_
+# array([ 1, 22, 41, 45, 61, 79,  9, 21, 23, 38, 42], dtype=int32)
+poly_svm.dual_coef_
+# array([[-1., -0.304, -1., -0.307, -1., -1., 0.612, 1., 1., 1., 1.]])
+```
+`$$ y = \text{sign}\left(-1\,(\mathbf{x}_1^T\mathbf{x} + 1)^2 - 0.304\,(\mathbf{x}_{22}^T \mathbf{x} + 1)^2 - \dots + 1\,(\mathbf{x}_{42}^T \mathbf{x} + 1)^2\right) $$`
+
+???
+For the kernel SVM there are no primal coefficients at all, only dual coefficients and support vectors. The prediction evaluates the kernel between the new point and each support vector and takes a weighted sum. Here 11 points are support vectors, and many dual coefficients are at plus or minus one, which is the bound C: those points sit inside the margin or are misclassified. Ask the class: what happens to prediction time when the number of support vectors grows with the training set?
+
+---
+class: fit
+# Runtime Considerations
+
+.center[
+![:scale 85%](images/svm_runtime.png)
+]
+
+???
+Here I fit the explicit-feature linear SVM and the polynomial kernel SVM on growing training sets, with the number of features fixed at two; the lower panel uses log-log axes. For small data both are fast. As the number of samples grows, the kernel SVM becomes much slower: training a kernel SVM scales between quadratically and cubically in the number of samples, while a linear model on explicit features scales linearly. When the explicit feature space is small, expand the features; when it is huge or infinite, as for RBF, use the kernel, as long as the number of samples allows.
+
+---
+# Prediction plots
+.wide-left-column[
+.smaller[
+```python
+from sklearn.linear_model import Ridge
+from sklearn.datasets import fetch_california_housing
+housing = fetch_california_housing()
+X_train, X_test, y_train, y_test = train_test_split(
+    housing.data, housing.target, random_state=0)
+ridge = make_pipeline(StandardScaler(), Ridge())
+ridge.fit(X_train, y_train)
+pred = ridge.predict(X_test)
+plt.plot(pred, y_test, 'o', alpha=.1)
+# or: PredictionErrorDisplay.from_predictions(
+#         y_test, pred, kind="actual_vs_predicted")
+```
+]]
+.narrow-right-column[
+![:scale 100%](images/regression_housing.png)
+]
+
+???
+Plotting predicted against true values is the single most useful regression diagnostic. Two problems are visible here: the horizontal line at 5 is a cap in the data (house values were censored at $500k), and the linear model predicts values below zero and above the cap. `PredictionErrorDisplay` produces this plot and the residual plot directly. Ask the class what they would change: a log-transformed target or a non-linear model are the usual answers.
+
+---
+class: split-40, fit
+# Residual Plots
+.left-column[![:scale 50%](images/regression_housing.png)
+<br />
+![:scale 60%](images/regression_housing_2.png)]
+.right-column[
+![:scale 100%](images/regression_housing_3.png)]
+???
+Rotating the plot 45 degrees gives true value against residual, which makes trends easier to see: we over-predict cheap houses and under-predict expensive ones. The histogram of residuals is centred near zero, so there is no global bias, but it has a long tail. These plots work regardless of the number of features.
+
+---
+# Target vs Feature
+![:scale 100%](images/target_vs_feature.png)
+???
+For more detail, look at the target against each feature. Median income has a clear, roughly linear relationship with house value; latitude and longitude show the geography that a linear model cannot capture well.
+
+---
+# Residual vs Feature
+![:scale 100%](images/residual_vs_feature.png)
+???
+Now the residual against each feature. If the model captured everything, each panel would be a flat cloud around zero. Structure in a panel, for example in latitude and longitude, shows an effect of that feature that the model missed. This is a cheap way to decide where to spend feature engineering effort.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'github',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        processEscapes: true,
+        skipTags: ['script', 'noscript', 'style'] /* removed 'code' entry*/
+    }
+    });
+    </script>
+  </body>
+</html>

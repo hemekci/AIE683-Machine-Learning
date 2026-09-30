@@ -1,0 +1,29 @@
+{
+  "student_id": null,
+  "selection_metric": null,
+  "cost_never_check": null,
+  "cost_at_default_threshold": null,
+  "threshold": null,
+  "test_cost_per_truck": null,
+  "expected_cost_per_truck": null,
+  "chosen_model": null,
+  "comparison": {
+    "model_a": null,
+    "model_b": null,
+    "metric": null,
+    "higher_is_better": null,
+    "fold_run_ids_a": null,
+    "fold_run_ids_b": null,
+    "n_train": null,
+    "n_test": null,
+    "p_naive": null,
+    "p_corrected": null,
+    "better_model": null
+  },
+  "memo": {
+    "decision": null,
+    "expected_savings_per_truck": null,
+    "main_risk": null,
+    "justification": ""
+  }
+}

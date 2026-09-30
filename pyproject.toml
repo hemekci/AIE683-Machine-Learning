@@ -1,0 +1,39 @@
+[project]
+name = "aie683-machine-learning"
+version = "2026.9"
+description = "Course materials for AIE683 Machine Learning, Hacettepe University"
+requires-python = ">=3.11"
+dependencies = [
+    "catboost",
+    "fastapi",
+    "httpx>=0.28.1",
+    "imbalanced-learn>=0.14.2",
+    "ipykernel>=7.3.0",
+    "jupyterlab",
+    "lightgbm",
+    "matplotlib",
+    "mlflow",
+    "nbclient>=0.11.0",
+    "nbformat>=5.11.1",
+    "numpy",
+    "optuna",
+    "pandas",
+    "scikit-learn",
+    "seaborn",
+    "shap",
+    "statsmodels",
+    "torch>=2.14.0",
+    "umap-learn",
+    "uvicorn",
+    "xgboost",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.9",
+]

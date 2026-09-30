@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 11: Time Series Forecasting</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 11: Time Series Forecasting
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today is about forecasting: predicting how a series will continue, using its own history and whatever else we know about the future. Most of the tools are ones you already have: gradient boosting from Week 5, cross-validation from Weeks 2 and 3, pipelines, and MLflow tracking from Week 8. What changes is the order of the rows. Once the order matters, several habits we built so far become wrong, and today is mostly about which ones.
+
+---
+# Plan for today (3 hours)
+
+1. **Tasks and data handling** (30 min): what forecasting is, pandas time indexes, resampling
+2. **Classical forecasting** (40 min): stationarity, autocorrelation, decomposition, AR / ARIMA / ETS
+3. **Forecasting as supervised learning** (60 min): lag and calendar features, `TimeSeriesSplit`, gradient boosting, backtesting, metrics
+4. **Multi-step forecasts and uncertainty** (30 min): recursive vs. direct, quantile loss
+5. **Tracking and packaging** (20 min): MLflow, the pipeline we serve in Week 12
+
+Three **Try it** activities along the way; the notebook is `lab.ipynb`.
+
+???
+Here is the plan. The first hour is the classical view, which you need because it gives you the baselines and the vocabulary. The second half is the modern practical approach: turn the forecasting problem into a regression problem and use the models we already know, with honest evaluation. We will take a break after the classical part. The lab notebook follows the second half closely, so keep it open.
+
+---
+class: fit2
+# A forecasting problem worth solving
+
+.center[![:scale 70%](images/bike two weeks.png)]
+
+- Capital Bikeshare, Washington D.C.: rentals per hour, 2011–2012
+- Every evening the operator decides where trucks move bikes and how many staff work tomorrow
+- Too few bikes at 8 am: lost rides and angry commuters. Too many: wasted truck hours
+- We need **tomorrow's demand, hour by hour**, before tomorrow starts
+
+???
+This is the running example for the second half. The plot shows two weeks of hourly rentals in summer 2011: you can see the daily rhythm, the two commuting peaks on working days, and weekends that look different. The operator does not care about forecasting for its own sake; the forecast feeds a rebalancing plan made the evening before. Keep that decision in mind, because it tells us the horizon (24 hours), what information is available when we forecast, and which errors are expensive. Ask the class: what would you want to know about tomorrow to make this forecast?
+
+---
+class: center, middle
+# Tasks
+
+???
+Before the case study, a quick map of the tasks people mean when they say "time series". They look similar but need different tools.
+
+---
+# 1d forecasting
+
+.center[![:scale 75%](images/1d forecasting.png)]
+
+- Only the history of one series, e.g. monthly CO$_2$ at Mauna Loa
+
+???
+The simplest setting is univariate forecasting: we have the history of one series and nothing else, and we want its continuation. This is monthly CO2 concentration at the Mauna Loa observatory, with a forecast for the 1990s and its uncertainty band. The classical statistical models we see today were designed for exactly this setting. Notice that the band widens with the horizon: the further ahead, the less we know.
+
+---
+# Nd forecasting
+
+.center[![:scale 75%](images/nd forecasting.png)]
+
+- Several related series forecast together, e.g. electricity demand in two neighbouring states
+
+???
+In multivariate forecasting several series are both inputs and targets. Here: electricity demand in New South Wales and Victoria, half-hourly over two weeks. They share weather and daily patterns, so each helps to forecast the other. Retail is the big application: thousands of product-store series forecast jointly, where one global model trained on all series usually beats one model per series. We will only touch the univariate and feature-based cases today.
+
+---
+# Feature-based forecasting (explanatory variables)
+
+.center[![:scale 75%](images/feature based forecasting.png)]
+
+- Target: rentals per hour. Known inputs: calendar, weather, holidays
+
+???
+The third setting is the one closest to what we did all semester: a target series plus explanatory variables such as temperature, humidity, holidays and the calendar. The key question for every feature is whether it is known at forecast time. The calendar always is. Weather is only known as a forecast, which is an important caveat we come back to. This is the setting of our bike-sharing case.
+
+---
+# What's different?
+
+- Forecasting: the rows are **not i.i.d.**; neighbouring observations are correlated, and the process drifts over time
+- We always learn from the past and predict the future, so **evaluation must respect time**
+- Classification: series of different lengths, feature extraction is the main work
+
+???
+Everything we did so far assumed i.i.d. rows. In a time series, tomorrow looks like today, so rows are correlated, and the process itself changes: trends, new stations, a pandemic. If you ignore this you get a model that looks great in cross-validation and disappoints in use. The single most important rule today: train on the past, evaluate on the future, and make every feature something you would actually know at prediction time.
+
+---
+class: middle
+# Preliminaries
+
+???
+Some practicalities first: how measurements are spaced, and how to load and reshape time series with pandas.
+
+---
+# Measurement frequencies
+
+$$ (x_{t_1}, y_{t_1}), \ldots, (x_{t_m}, y_{t_m}), \quad t_1 < t_2 < \ldots < t_m $$
+
+Equally spaced:
+
+$$ t_{i+1} - t_i = \text{const} $$
+
+Unevenly spaced:
+
+$$ t_{i+1} - t_i \quad \text{varies} $$
+
+aka "point processes" in statistics
+
+???
+Most forecasting models assume equally spaced observations: every hour, every day, every month. Event data such as trades, earthquakes or individual bike rides arrive at irregular times. Statisticians call these point processes and model them differently. Today we only treat the evenly spaced case, which is also how most business forecasting is framed.
+
+---
+# Examples
+
+.left-column[
+.center[Evenly spaced
+![:scale 100%](images/evenly spaced data.png)
+CO$_2$ measurements]
+]
+.right-column[
+.center[Unevenly spaced
+![:scale 100%](images/unevenly spaced data.png)
+Volcanic eruption deaths]
+]
+
+???
+On the left, weekly CO2 measurements; on the right, deaths from volcanic eruptions, which occur whenever an eruption happens. The standard way to turn event data into an evenly spaced series is to aggregate over fixed periods, for example counts per hour. Our bike data is exactly that: individual rides aggregated to rentals per hour. Choose the aggregation period with the decision in mind; hourly is right for rebalancing, daily might be right for staffing.
+
+---
+class: center, middle
+
+# Time series in pandas
+
+???
+pandas was originally built for financial time series, so its time functionality is excellent. The key idea is to put the time in the index. Then resampling, shifting, rolling windows and time-based slicing all become one-liners.
+
+---
+# Parse dates, set a `DatetimeIndex`
+
+.smaller[
+```python
+from sklearn.datasets import fetch_openml
+co2 = fetch_openml(data_id=41187, as_frame=True).frame  # Mauna Loa, weekly
+co2[["year", "month", "day", "co2"]].head(3)
+```
+```
+   year  month  day    co2
+0  1958      3   29  316.1
+1  1958      4    5  317.3
+2  1958      4   12  317.6
+```
+```python
+co2["date"] = pd.to_datetime(co2[["year", "month", "day"]])
+ppm = co2.set_index("date")["co2"]
+ppm.index.to_series().diff().value_counts().head(3)
+```
+```
+7 days     2202
+14 days      14
+28 days       2
+```
+]
+
+???
+The dataset has separate year, month and day columns. `pd.to_datetime` accepts a frame with those column names and builds real timestamps; do not parse dates by hand. Then set the date as the index. The last line is a check I recommend on every new time series: look at the differences between consecutive timestamps. Here most steps are 7 days, but some are 14 or 28, so there are missing weeks. Ask: what happens to a lag-1 feature if you do not notice this?
+
+---
+# Mauna Loa CO$_2$
+
+.center[![:scale 75%](images/maunaloa plot.png)]
+
+.smaller[
+```python
+weekly = ppm.asfreq("W-SAT")   # complete weekly grid, missing weeks become NaN
+weekly.isna().sum()            # 59
+```
+]
+
+???
+`asfreq` puts the series on a complete regular grid: every Saturday from 1958 to 2001, with NaN where a measurement is missing. The gaps you see in the plot are those missing weeks. Two things stand out: a strong upward trend and a regular yearly oscillation. Those two components drive every modeling decision for this series.
+
+---
+# Resampling
+
+.smaller[
+```python
+monthly = weekly.resample("MS").mean()   # MS = month start
+monthly.head(4)
+```
+```
+date
+1958-03-01    316.100000
+1958-04-01    317.200000
+1958-05-01    317.433333
+1958-06-01           NaN
+Freq: MS, Name: co2, dtype: float64
+```
+]
+
+- `resample` groups by time period; aggregate with `mean`, `sum`, `max`, ...
+- Common aliases: `"h"`, `"D"`, `"W"`, `"MS"`, `"QS"`, `"YS"`; multiples like `"3YS"`
+
+???
+Resampling is groupby for time. Here I go from weekly to monthly by averaging all measurements in each month; the index is labeled with the first day of the month. June 1958 has no measurement at all, so it is still NaN. Note that pandas renamed several aliases: hourly is lowercase `h` and year start is `YS`; older tutorials with `H` or `AS` raise errors now. From here on I use the monthly series for the classical models.
+
+---
+class: center, middle
+
+# Classical forecasting
+
+???
+Forecasting grew up in statistics and econometrics, and the classical models are still the baselines you should beat. We need three concepts: stationarity, autocorrelation and decomposition.
+
+---
+# Stationarity
+
+A series is (weakly) stationary if for all $t$ and lags $k$
+
+$$ \operatorname{E}[x_t] = \mu, \qquad \operatorname{Var}[x_t] = \sigma^2, \qquad \operatorname{Cov}[x_t, x_{t+k}] = \gamma_k $$
+
+- Mean, variance and lag-$k$ covariance do not depend on time
+- Required by ARMA-type models; trends and seasonality violate it
+
+???
+Weak stationarity means the mean, the variance and the covariance between observations k steps apart are constant over time. Informally, the process today behaves like the process a year ago. Classical ARMA models assume this, so the usual workflow is to transform the series until it looks stationary, model it, and transform the forecasts back. There are formal tests, such as ADF and KPSS in statsmodels, but plots and a working model usually tell you more.
+
+---
+# CO$_2$ is not stationary
+
+.center[![:scale 70%](images/maunaloa plot.png)]
+
+- The mean increases: a trend
+- A yearly cycle: seasonality
+
+???
+The CO2 series obviously violates stationarity: the mean rises by about 50 ppm over the period, and there is a yearly cycle driven by vegetation in the northern hemisphere. Two standard ways to handle this: model the trend explicitly and subtract it, or difference the series. We will see both.
+
+---
+# Autocorrelation
+
+$$ \rho_k = \frac{\operatorname{E}[(x_t - \mu)(x_{t+k} - \mu)]}{\sigma^2} $$
+
+.smaller[
+```python
+monthly = monthly.ffill()
+monthly.autocorr(lag=1), monthly.autocorr(lag=6), monthly.autocorr(lag=12)
+```
+```
+(0.998, 0.973, 0.999)
+```
+]
+
+???
+Autocorrelation measures how strongly the series correlates with a shifted copy of itself. For monthly CO2, lag 1 is 0.998, lag 6 drops slightly, and lag 12 is back to 0.999: the value one year ago is an excellent predictor. These numbers are dominated by the trend, though: any trending series has huge autocorrelation at every lag. That is why we usually look at autocorrelation after removing the trend.
+
+---
+# Autocorrelation function (ACF)
+
+.smaller[
+```python
+from statsmodels.graphics.tsaplots import plot_acf
+plot_acf(monthly, lags=48)
+```
+]
+
+.center[![:scale 55%](images/autocorr 2.png)]
+
+???
+The autocorrelation function plots the autocorrelation for all lags at once; the shaded band is a confidence band for zero autocorrelation. For the raw series it decays slowly and stays high, which is the signature of a trend. You can barely see bumps at multiples of 12. statsmodels works directly with pandas Series and understands the index frequency, which is convenient.
+
+---
+# De-trending by differencing
+
+$$ x'_t = x_t - x_{t-1} $$
+
+.smaller[
+```python
+monthly.diff().plot()
+```
+]
+
+.center[![:scale 60%](images/detrending.png)]
+
+???
+Differencing replaces each value by its change from the previous one. This removes a linear trend. The differenced series fluctuates around a constant mean of about 0.1 ppm per month, which is the average growth rate, and the yearly cycle is now clearly visible. Seasonal differencing, x_t minus x_{t-12}, would remove the yearly cycle too. These are the "I" (integrated) parts of ARIMA.
+
+---
+# ACF: original vs. differenced
+
+.left-column[
+Original series
+.center[![:scale 100%](images/autocorr 2.png)]
+]
+.right-column[
+Differenced series
+.center[![:scale 100%](images/autocorr 4.png)]
+]
+
+???
+After differencing, the ACF shows the structure hiding behind the trend: strong positive autocorrelation at lags 12, 24, 36 and negative autocorrelation at lags 6, 18, 30, which is exactly a yearly cycle. The ACF of a differenced series is the standard diagnostic for choosing seasonal periods and model orders. For hourly bike data, the same plot shows spikes at lag 24 and 168: daily and weekly cycles.
+
+---
+class: fit
+# Decomposition: trend + season + remainder
+
+.smaller[
+```python
+from statsmodels.tsa.seasonal import STL
+STL(monthly, period=12).fit().plot()
+```
+]
+
+.center[![:scale 50%](images/seasonal model.png)]
+
+???
+STL, seasonal-trend decomposition using LOESS, splits the series into a smooth trend, a periodic seasonal component, and a remainder. For CO2 the trend dominates (from about 315 to 370 ppm), the seasonal part is a few ppm, and the remainder is small, which tells us this series is highly predictable. Decomposition is an analysis tool, not a forecaster: it uses the whole series, including the future of any point. Use it to understand the data, not as a feature generator.
+
+---
+# Autoregressive (AR) model
+
+Order-$p$ AR model with intercept:
+
+$$ x_t = c + \phi_1 x_{t-1} + \phi_2 x_{t-2} + \ldots + \phi_p x_{t-p} + \varepsilon_t $$
+
+- Learn $c, \phi_1, \ldots, \phi_p$ by least squares
+- Forecast recursively: predictions become inputs for later steps
+
+???
+The autoregressive model predicts the next value as a linear combination of the last p values. That is just linear regression on lagged copies of the series, which you could fit with scikit-learn. To forecast several steps ahead, the model feeds its own predictions back in; after p steps it runs entirely on its own predictions. Keep this "recursive" idea in mind; we come back to it with gradient boosting.
+
+---
+# AR model with statsmodels
+
+.left-column[
+.smaller[
+```python
+from statsmodels.tsa.ar_model import AutoReg
+train = monthly[:"1990"]
+test = monthly["1991":]
+ar = AutoReg(train, lags=12, trend="c").fit()
+ar.params.round(3)
+```
+```
+const     -3.524
+co2.L1     0.836
+co2.L2    -0.168
+...
+co2.L11    0.382
+co2.L12    0.072
+```
+]
+]
+.right-column[
+.smaller[
+```python
+pred = ar.predict(start=test.index[0],
+                  end=test.index[-1])
+```
+]
+.center[![:scale 100%](images/ar model with statsmodel.png)]
+]
+
+???
+statsmodels puts the data into the model constructor and hyperparameters into fit or the constructor, the opposite of scikit-learn, so read the docs for each model. `AutoReg` replaced the old `AR` class. With 12 lags, the model covers one full seasonal cycle; notice the large coefficient at lag 11 and 12. The forecast captures the seasonal shape but drifts away from the trend over the decade: an AR model with only an intercept is a model for stationary data, and this series is not stationary.
+
+---
+# (S)ARIMA
+
+.smaller[
+```python
+from statsmodels.tsa.arima.model import ARIMA
+sarima = ARIMA(train, order=(1, 1, 1), seasonal_order=(0, 1, 1, 12)).fit()
+fc = sarima.get_forecast(steps=len(test))
+fc.predicted_mean, fc.conf_int(alpha=0.05)
+```
+]
+
+.center[![:scale 50%](images/arima.png)]
+
+???
+ARIMA combines differencing (the I), autoregression (AR) and a moving average of past errors (MA). The seasonal version adds the same terms at the seasonal lag; order (1,1,1)(0,1,1,12) is the classic "airline model". It differences once regularly and once seasonally, which handles both the trend and the cycle, and it gives a 95% prediction interval for free. The test MAE over the 1990s is 0.83 ppm, much better than the AR models at about 4 ppm. `tsa.arima.model.ARIMA` is the current interface; the old `arima_model` module was removed.
+
+---
+# Exponential smoothing (ETS)
+
+.smaller[
+```python
+from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+ets = ETSModel(train, error="add", trend="add", seasonal="add", seasonal_periods=12).fit()
+ets.get_prediction(start=test.index[0], end=test.index[-1]).summary_frame(alpha=0.05)
+```
+]
+
+.center[![:scale 50%](images/ets.png)]
+
+???
+Exponential smoothing models keep a level, a trend and seasonal terms and update them with exponentially decaying weights on the past. ETS stands for error, trend, seasonality; each can be additive, multiplicative or absent. Holt-Winters is the additive version shown here. ETS is fast, robust, and the standard automatic baseline in forecasting competitions. Here its test MAE is 1.40 ppm: good, slightly worse than SARIMA.
+
+---
+# Always start with naive baselines
+
+- **Naive**: $\hat{x}_{t+h} = x_t$ (the last value)
+- **Seasonal naive**: $\hat{x}_{t+h} = x_{t+h-m}$ (same period last season, $m$ = season length)
+- Cost nothing, need no tuning, and are surprisingly hard to beat on noisy data
+- A model that does not beat seasonal naive in a proper backtest is not ready for use
+
+???
+Before any model, compute the naive forecasts. For monthly CO2 the seasonal naive forecast, "same month last year", has a test MAE of 8.6 ppm over a decade because it ignores the trend, so every model beats it. On noisy business data it is often a different story. MASE, a metric we see later, is defined relative to exactly this baseline. Question for the class: for hourly bike rentals, what is the season length m? There are two, 24 and 168.
+
+---
+class: center, middle
+
+# Forecasting as supervised learning
+
+???
+Now the second half. The idea: turn the forecasting problem into an ordinary regression table, where each row is a moment in time, the features are what we know at forecast time, and the target is the value we want. Then all of scikit-learn is available. First on the CO2 series, then on bike sharing.
+
+---
+# Regression on time: the trend
+
+.smaller[
+```python
+X = pd.DataFrame({"t": np.arange(len(monthly)) / 12,     # years since start
+                  "month": monthly.index.month}, index=monthly.index)
+lr = LinearRegression().fit(X_train[["t"]], train)
+```
+]
+
+.center[![:scale 55%](images/linear model for trend.png)]
+
+???
+The simplest feature is time itself. A linear regression on time fits a straight trend line. It captures the overall growth, but the curve is slightly convex, CO2 is accelerating, so the line underestimates the 1990s. And there is no seasonality at all yet.
+
+---
+# A quadratic trend
+
+.smaller[
+```python
+quad = make_pipeline(PolynomialFeatures(degree=2, include_bias=False), LinearRegression())
+quad.fit(X_train[["t"]], train)
+```
+]
+
+.center[![:scale 55%](images/quadratic model.png)]
+
+???
+Adding the square of time gives a quadratic trend, which follows the acceleration well. This is a global model: one formula for the entire period. The AR models were local: they only looked at the last few months. Global trend models extrapolate their formula into the future, which is powerful if the trend continues and dangerous if it does not. A polynomial of high degree would extrapolate absurdly; ask the class to predict what degree 5 would do in 2001.
+
+---
+# Adding the season: integer vs. one-hot month
+
+.smaller[
+```python
+month_ohe = ColumnTransformer([
+    ("trend", PolynomialFeatures(2, include_bias=False), ["t"]),
+    ("month", OneHotEncoder(sparse_output=False), ["month"]),
+])
+quad_month = make_pipeline(month_ohe, LinearRegression()).fit(X_train, train)
+```
+]
+
+.center[![:scale 70%](images/arma month.png)]
+
+???
+To model seasonality we add the month. As an integer, a linear model can only learn a linear function of the month, which gives a sawtooth that jumps between December and January: nonsense. One-hot encoding the month lets the model learn a separate offset for each month, and now it reproduces the seasonal shape. The whole model is quadratic trend plus twelve monthly offsets. In old code you will see `OneHotEncoder(categorical_features=...)`; that is gone, `ColumnTransformer` from Week 3 is the way to select columns.
+
+---
+# CO$_2$: test MAE over 1991–2001
+
+.left-column[
+.smaller[
+| model | MAE (ppm) |
+|---|---|
+| SARIMA(1,1,1)(0,1,1)$_{12}$ | 0.83 |
+| ETS (A,A,A) | 1.40 |
+| quadratic + month one-hot | 3.72 |
+| AR(12) | 3.80 |
+| quadratic trend | 3.82 |
+| linear trend | 4.09 |
+| seasonal naive | 8.58 |
+]
+]
+.right-column[
+.center[![:scale 100%](images/arma res.png)]
+]
+
+???
+On a smooth series with a clean trend and a stable season, the classical models win clearly. SARIMA and ETS model the trend locally and adapt the level as they go; the regression model commits to a global quadratic that was slightly off. The lesson is not that regression is bad; it is that for a single smooth series the classical models are hard to beat. The picture changes when we have explanatory variables, several seasonalities and lots of data, which is our bike case.
+
+---
+# Back to bike sharing
+
+.center[![:scale 70%](images/bike profile.png)]
+
+- 17,379 hours; columns: season, year, month, hour, weekday, holiday, working day, weather, temperature, humidity, wind
+- Two daily peaks on working days, one broad afternoon hump on weekends
+
+???
+Back to the bike data. Mean rentals by hour of day, one line per weekday: working days have commuting peaks at 8 am and 5 to 6 pm, weekends have a single afternoon hump. So the hour effect depends on the day type, an interaction. Weather matters too: rain kills demand. A single SARIMA cannot easily use weather and holiday information or this interaction, while a tree ensemble can. The dataset is on OpenML as Bike_Sharing_Demand and downloads in the lab.
+
+---
+# Framing: one row per target hour
+
+For a forecast made $h$ hours ahead (here $h = 24$):
+
+| features: known at forecast time | target |
+|---|---|
+| calendar of the target hour (hour, weekday, holiday, month) | $y_t$ |
+| weather at the target hour (in production: a weather forecast) | |
+| lags $y_{t-24}, y_{t-48}, y_{t-168}$ (all $\geq h$) | |
+| rolling windows of the **shifted** series, e.g. mean of $y_{t-47}, \ldots, y_{t-24}$ | |
+
+.smaller[
+```python
+shifted = y.shift(24)
+XL = X.assign(lag_24=shifted, lag_48=y.shift(48), lag_168=y.shift(168),
+              roll_mean_24=shifted.rolling(24).mean())
+```
+]
+
+???
+Here is the core of the supervised framing. Every row corresponds to a target hour. The features must be things you know when you make the forecast, which is 24 hours before. So lags must be at least 24, and rolling statistics are computed on the series already shifted by 24. Calendar features are always known. Weather is a subtle one: the dataset has the observed weather, but in production you only have yesterday's forecast of it, so our results with observed weather are somewhat optimistic. Ask: is lag_1 allowed here?
+
+---
+# Why shuffled cross-validation lies
+
+Recall Weeks 2–3: the split must mimic how the model will be used.
+
+.smaller[
+```python
+hgb = HistGradientBoostingRegressor(categorical_features="from_dtype")
+cross_val_score(hgb, XL, y, cv=KFold(5, shuffle=True), scoring="neg_mean_absolute_error")
+cross_val_score(hgb, XL, y, cv=TimeSeriesSplit(5, test_size=1000, gap=48), ...)
+```
+]
+
+| CV scheme | MAE (rentals / hour) |
+|---|---|
+| shuffled `KFold` | 29.7 |
+| `TimeSeriesSplit` | 46.0 |
+
+???
+Same model, same features, two validation schemes. Shuffled K-fold reports an MAE of about 30; time-ordered splits report 46. The shuffled estimate is optimistic because every test hour has its neighbouring hours, and the future, in the training set. The model effectively interpolates instead of forecasting. This is the temporal version of the grouped data problem from Week 2: rows that are close in time are not independent. Only the time-ordered number tells you what happens in December when you trained up to November.
+
+---
+# `TimeSeriesSplit` with a gap
+
+.center[![:scale 70%](images/tss gap.png)]
+
+- Train on the past, test on the next block; expanding window (or `max_train_size`)
+- `gap` drops rows between train and test: needed when features or targets span windows
+
+???
+`TimeSeriesSplit` produces expanding training windows followed by a test block. `test_size` fixes the block length, `max_train_size` gives a sliding window instead of an expanding one if old data is less relevant. The `gap` parameter drops a few rows between train and test. Why? If a feature is a rolling window or the target is several steps ahead, rows near the boundary share information with both sides. A gap at least as long as the longest window or horizon removes that overlap. It costs you a little data, so there is no reason to skip it.
+
+---
+# Try it 1: find the leak (10 min)
+
+A colleague's feature table for the **day-ahead** forecast:
+
+.smaller[
+```python
+colleague = X.assign(lag_1=y.shift(1),
+                     lag_24=y.shift(24),
+                     smooth_24=y.rolling(24, center=True).mean())
+```
+]
+
+1. Without running it: which features could not exist at 18:00 the day before?
+2. Run it with `TimeSeriesSplit`. Why does it still look great?
+3. Fix the table and compare (lab, "Try it 1")
+
+???
+Give them two minutes to answer the first question on paper before running anything. The answers: lag_1 is only one hour old, fine for a one-step model but not available for a forecast issued the day before; the centered rolling mean uses the next 12 hours, which is leakage from the future. `TimeSeriesSplit` does not protect you here because the leak is in the features, not in the split: MAE about 29 with the leaky table versus about 45 when fixed. The lesson: time-aware CV is necessary, not sufficient; you have to audit every feature for availability.
+
+---
+# Calendar features for cyclic variables
+
+.center[![:scale 60%](images/calendar features.png)]
+
+| Ridge with hour, weekday, month as | MAE |
+|---|---|
+| integers | 158 |
+| one-hot | 115 |
+| periodic splines | 112 |
+
+???
+Calendar features matter a lot for linear models. As raw integers, a linear model predicts a ramp that resets at midnight, completely wrong. One-hot encoding learns one value per hour, which is right in shape. Periodic splines, next slide, give a smooth version with fewer parameters. Both still miss the interaction between hour and working day, and this plotted week is the Christmas week, so all of them predict too high. Trees handle interactions automatically, which is part of why boosting does so well here.
+
+---
+# Periodic spline features
+
+.smaller[
+```python
+def periodic_spline(period, n_splines):
+    knots = np.linspace(0, period, n_splines + 1).reshape(-1, 1)
+    return SplineTransformer(degree=3, knots=knots, extrapolation="periodic")
+
+ColumnTransformer([("hour", periodic_spline(24, 12), ["hour"]),
+                   ("weekday", periodic_spline(7, 3), ["weekday"]),
+                   ("month", periodic_spline(12, 6), ["month"])], remainder="passthrough")
+```
+]
+
+.center[![:scale 60%](images/periodic splines.png)]
+
+???
+A periodic spline transformer replaces the hour by 12 smooth bump functions that wrap around: the basis at hour 23.9 continues smoothly into hour 0. Compared to sine and cosine features, which are the other popular choice, splines are more local and flexible. This follows scikit-learn's "time-related feature engineering" example, which is worth reading in full. For linear models, add explicit interactions, for example spline features times the working-day indicator, to get the weekday/weekend difference.
+
+---
+# Gradient boosting for forecasting
+
+- `HistGradientBoostingRegressor`: native categoricals (`categorical_features="from_dtype"`), handles missing values (early lags)
+- LightGBM / XGBoost: same idea, more options; the default in many forecasting competitions
+- Learns interactions (hour × working day × weather) without feature engineering
+- **Caveat: trees cannot extrapolate.** A tree never predicts above the largest training target.
+  Detrend or difference the target, or predict a ratio, when there is a trend.
+- Consider `loss="poisson"` for counts
+
+???
+Gradient boosting from Week 5 is the workhorse of practical forecasting on tabular data; boosted trees on lag and calendar features won or placed high in many retail forecasting competitions. It handles categorical calendar variables and missing lags natively. The main caveat is extrapolation: a tree predicts piecewise constants within the range of training targets. For CO2, a boosted tree trained up to 1990 would predict a flat line at the 1990 level. So with a trend, model the change or the ratio instead of the level, or combine a linear trend with trees on the residual. For counts, the Poisson loss is often a better fit than squared error.
+
+---
+# The backtest: our referee
+
+- `TimeSeriesSplit(n_splits=3, test_size=24 * 28)`: three 4-week test windows at the end of 2012
+- ML models: refit per fold, predict the whole window (all features are $\geq$ 24 h old)
+- Classical baselines: one 24-hour forecast per test day using only earlier data
+  - naive, seasonal naive (24 h and 168 h), Holt-Winters ETS with a daily season (refit daily on 4 weeks)
+- Same windows and metrics for every model, all logged to MLflow
+
+???
+A backtest replays history: pretend it is the start of each test window, train on what was known then, forecast, and score. Every model sees exactly the same windows. For the statistical baselines we issue one 24-hour forecast per day, as the operator would. This is also the protocol for Try it 2 and for your homework; changing the protocol to win is not allowed. Three folds is on the small side; in a real project I would use more windows and look at the spread, not just the mean.
+
+---
+# Evaluation metrics
+
+$$ \text{MAE} = \frac{1}{n}\sum |y_t - \hat{y}_t| \qquad \text{RMSE} = \sqrt{\frac{1}{n}\sum (y_t - \hat{y}_t)^2} $$
+
+$$ \text{MAPE} = \frac{1}{n}\sum \left|\frac{y_t - \hat{y}_t}{y_t}\right| \qquad \text{MASE} = \frac{\text{MAE}}{\frac{1}{T-m}\sum_{t=m+1}^{T} |y_t - y_{t-m}|} $$
+
+- MAE: in units of the target, robust. RMSE: punishes large misses
+- MAPE: undefined at $y = 0$, explodes for small $y$, asymmetric. Avoid for counts
+- MASE: MAE relative to in-sample seasonal naive; $< 1$ beats the baseline, comparable across series
+
+???
+MAE is in the unit of the target, bikes per hour, and is what I report by default. RMSE weighs large errors more, which fits a problem where a big miss at rush hour is expensive. MAPE is popular with business users but has real problems: it is undefined when the actual value is zero, huge when the actual is small, and it penalizes over-forecasts more than under-forecasts. MASE, from Hyndman and Koehler, scales the MAE by the in-sample error of the seasonal naive forecast; here m = 24. It is scale-free, so you can average it across stations or products, and it has a direct interpretation.
+
+---
+# Backtest results (day-ahead, mean of 3 folds)
+
+.left-column[
+.smaller[
+| model | MAE | RMSE | MAPE | MASE |
+|---|---|---|---|---|
+| HGB, calendar + weather | 44.3 | 68.1 | 0.72 | 0.68 |
+| LightGBM + lags | 48.5 | 77.0 | 1.03 | 0.75 |
+| HGB + lags | 51.5 | 80.6 | 1.21 | 0.80 |
+| seasonal naive 24 h | 76.6 | 124.4 | 0.91 | 1.19 |
+| seasonal naive 168 h | 95.3 | 156.6 | 2.02 | 1.48 |
+| ETS (Holt-Winters) | 150.7 | 193.0 | 5.14 | 2.34 |
+| naive | 165.3 | 209.0 | 6.16 | 2.57 |
+]
+]
+.right-column[
+.center[![:scale 100%](images/backtest mae.png)]
+]
+
+???
+Boosting beats every baseline by a wide margin, MASE around 0.7. Two surprises worth discussing. First, the model without any lag features is the best: calendar plus weather explains most of the demand, and 24-hour-old lags add noise, especially in the holiday folds, look at the error bars. Second, Holt-Winters is worse than seasonal naive: with one daily season it cannot represent the weekday/weekend difference or the weather. Also look at the MAPE column: seasonal naive has a better MAPE than the boosted lag models despite a much worse MAE, because MAPE is driven by the night hours with 1 to 5 rentals.
+
+---
+# Try it 2: predict the winner, then beat it (15 min)
+
+1. Before running the backtest cell: write down which model you expect to win and by how much
+2. Run it. Were you right? Why do lag features not help here?
+3. Beat the best backtest MAE without changing the protocol. Ideas: `loss="poisson"`, other lags, `learning_rate` / `max_iter`, a log target (`TransformedTargetRegressor`)
+4. Log your run with `log_backtest(...)`; we compare the leaderboard in MLflow at the end
+
+???
+This is a small competition, and the backtest is the referee. Most people predict that the lag model wins, which makes the discussion afterwards more interesting. A Poisson loss with more iterations and a smaller learning rate gets the MAE to about 39 to 40; a log target does similarly. After 12 minutes, open the MLflow UI or print `search_runs` sorted by backtest MAE and look at the top three. Ask the winners whether their gain is larger than the fold-to-fold spread; with three folds, differences of one or two bikes per hour are not convincing, a point from Week 8.
+
+---
+# What goes wrong in practice
+
+- **Features you will not have**: observed weather instead of the forecast, lags shorter than the horizon, centered windows
+- **Gaps in the time index**: `shift(24)` on rows is not "24 hours ago" when hours are missing. Reindex to a complete grid first
+- **Scaling or imputing on the whole series** before splitting (Week 3 leakage, now along time)
+- **Tuning on the test period**: hyperparameters chosen on the backtest you report. Hold out a final period
+- **Regime changes**: holidays, new stations, a pandemic; no backtest on 2012 predicts 2020
+- **Trend + trees**: flat forecasts above the training range
+
+???
+These are the failures I see most often in student projects and in industry. The first two are silent: nothing crashes, and the numbers just look better than reality. In our dataset about 165 hours are missing, so a row shift of 24 is sometimes 25 hours; I accept that approximation in the lab and say so, but you should not in a project. Tuning on the backtest you report is the forecasting version of reporting test-set-tuned results, and nested evaluation from Week 8 applies. Regime change is where monitoring in Week 12 comes in.
+
+---
+class: center, middle
+
+# Multi-step forecasts and uncertainty
+
+???
+So far each model produced a forecast for a fixed horizon. Now: how to forecast a whole path of 24 hours, and how to say how sure we are.
+
+---
+# Multi-step strategies
+
+**Recursive (iterated)**: one 1-step model $f$; feed predictions back
+
+$$ \hat{y}_{t+1} = f(y_t, y_{t-1}, \ldots), \quad \hat{y}_{t+2} = f(\hat{y}_{t+1}, y_t, \ldots), \ \ldots $$
+
+**Direct**: one model per horizon $h$, trained only on lags $\geq h$
+
+$$ \hat{y}_{t+h} = f_h(y_t, y_{t-1}, \ldots), \quad h = 1, \ldots, H $$
+
+- Recursive: one model, uses the freshest data, but errors compound
+- Direct: no error feedback, but $H$ models and each ignores the most recent values it cannot see
+- Hybrids: one model with the horizon as a feature; multi-output models
+
+???
+The AR model used the recursive strategy: predict one step, append the prediction, predict the next. It uses the most recent observation for the first steps, but errors accumulate because later steps are fed with predictions. The direct strategy trains a separate model for each horizon, using only information available h steps earlier. Our day-ahead model with lags of at least 24 is a direct model for h = 24. Direct is simpler to validate and parallelize, recursive is simpler to maintain. Neither dominates; you check on a backtest.
+
+---
+# Recursive vs. direct on bike sharing
+
+.center[![:scale 60%](images/recursive vs direct.png)]
+
+- 28 daily origins in December 2012, gradient boosting with lags 1, 2, 3, 24, 168 (recursive) or $h, h+1, h+2, 24, 168$ (direct)
+- Mean MAE over 24 horizons: about 40 for both
+
+???
+Both strategies give very similar errors here, around 40 bikes per hour on average. Read the curve carefully: the origins are around midnight, so horizon 8 is also 8 am, and the shape mostly follows the daily demand, not the horizon. To isolate the horizon effect you would scale errors by hour or use origins at all hours. Error compounding is mild because the calendar and weather features anchor each recursive step. On series with fewer exogenous features, like CO2 or sales without promotions data, the difference is usually larger. Ask the class which one they would deploy and why; maintenance cost is a valid argument.
+
+---
+# Prediction intervals with quantile loss
+
+Pinball loss for quantile $q$:
+
+$$ L_q(y, \hat{y}) = \max\big(q\,(y - \hat{y}),\ (q - 1)\,(y - \hat{y})\big) $$
+
+.smaller[
+```python
+lower = HistGradientBoostingRegressor(loss="quantile", quantile=0.05).fit(X_tr, y_tr)
+upper = HistGradientBoostingRegressor(loss="quantile", quantile=0.95).fit(X_tr, y_tr)
+coverage = np.mean((y_te >= lower.predict(X_te)) & (y_te <= upper.predict(X_te)))
+```
+]
+
+- Minimizing $L_q$ gives the conditional $q$-quantile; two models give a 90% interval
+- Check **empirical coverage** on the backtest; evaluate with `mean_pinball_loss`
+
+???
+A point forecast is not enough for the operator: they want to know how many bikes are needed to be 95% sure of not running out. The pinball loss is asymmetric: for q = 0.95, under-predicting costs 19 times more than over-predicting, so the minimizer is the 95% quantile. Training two boosted models gives a 90% prediction interval that adapts to the conditions: wide at rush hour, narrow at night. The interval is only a claim until you check its coverage on data the models did not see.
+
+---
+class: fit
+# Quantile forecasts on the first test week
+
+.center[![:scale 65%](images/quantile intervals.png)]
+
+- With lag features: empirical coverage 0.89 for a nominal 90%, mean width 172 bikes
+- Calendar + weather only (the lab): coverage 0.78, too narrow
+
+???
+Here the 5% and 95% models with lag features, trained up to the end of November. Coverage is 0.89, close to the nominal 0.90, and the band widens at the peaks. In the lab you fit the same models without lags and get only 0.78: quantile regression gives no coverage guarantee, it inherits every bias of the model. If you need a guarantee, conformal prediction calibrates intervals on a held-out period; for time series use a rolling calibration window because the data are not exchangeable.
+
+---
+# Try it 3: is the interval right at every hour? (10 min)
+
+- Overall coverage can be fine while rush hours are under-covered and nights over-covered
+- In the lab: compute **coverage per hour of day** for the 90% interval and plot it
+- Discuss: which hours fail? What would you change? (log target, lag features, conformal calibration per hour)
+
+???
+This is a short analysis task: a one-line groupby. Most students find that coverage drops at the commuting peaks, exactly where the operator needs it most. Conditional coverage matters because decisions are made per hour, not on the average. Ask two or three groups for their proposed fix and whether it would need a new backtest; the answer is yes, always.
+
+---
+class: center, middle
+
+# Tracking and packaging
+
+???
+Last part: log the whole comparison to MLflow and package the chosen model so that Week 12 can register and serve it.
+
+---
+# Logging the backtest to MLflow
+
+.smaller[
+```python
+mlflow.set_experiment("week11-time-series")
+
+def log_backtest(name, fold_metrics, model=None, features=None):
+    with mlflow.start_run(run_name=name):
+        mlflow.set_tags({"task": "day-ahead forecast", "cv": "TimeSeriesSplit(3 x 672h)"})
+        if model is not None:
+            mlflow.log_params({k: v for k, v in model.get_params().items()
+                               if isinstance(v, (int, float, str, bool)) or v is None})
+            mlflow.log_param("features", ",".join(features.columns))
+        mlflow.log_metrics({f"backtest_{k}": v
+                            for k, v in fold_metrics.drop(columns="fold").mean().items()})
+        for _, row in fold_metrics.iterrows():
+            mlflow.log_metric("fold_mae", row["mae"], step=int(row["fold"]))
+```
+]
+
+???
+One run per model, baselines included; a baseline run with no parameters is still a run, because the comparison is only meaningful if the baseline sits next to the model. I log the mean metrics and the per-fold MAE as a stepped metric, so the MLflow UI plots the spread across folds. Tag the validation scheme: a backtest MAE is meaningless without knowing which windows it came from. This is the same pattern as Week 8, applied to backtests.
+
+---
+# The final model: one `Pipeline`
+
+.smaller[
+```python
+CATEGORICAL = ["season", "holiday", "workingday", "weather"]
+features = ColumnTransformer(
+    [("categorical", OneHotEncoder(handle_unknown="ignore", sparse_output=False), CATEGORICAL),
+     ("hour", periodic_spline(24, 12), ["hour"]),
+     ("weekday", periodic_spline(7, 3), ["weekday"]),
+     ("month", periodic_spline(12, 6), ["month"])],
+    remainder="passthrough")
+forecaster = Pipeline([("features", features),
+                       ("model", HistGradientBoostingRegressor(loss="poisson", max_iter=300,
+                                                               learning_rate=0.05))])
+forecaster.fit(X_serve, y)                       # backtest MAE about 40
+mlflow.sklearn.log_model(forecaster, name="model", signature=signature,
+                         input_example=X_serve.head(3), skops_trusted_types=TRUSTED_TYPES)
+```
+]
+
+- Raw columns in, forecast out: no lag bookkeeping at serving time
+
+???
+Since the best model needs only calendar and weather columns, the whole thing is one scikit-learn Pipeline that takes the twelve raw input columns. That makes serving simple: a request carries the calendar and the weather forecast for the target hour, and nothing else. If we had kept lag features, the service would also need access to recent observations, which is a real engineering cost to weigh against the accuracy gain. We log it with a signature and an input example; `skops_trusted_types` lists the types MLflow may load back safely. In Week 12 you register this model, serve it, and monitor it for drift.
+
+---
+# Tools worth knowing
+
+- **statsmodels**: ARIMA/SARIMAX, ETS, STL, unobserved components (state space)
+- **statsforecast** (Nixtla): fast AutoARIMA / AutoETS / Theta for many series
+- **skforecast**, **sktime**, **darts**: scikit-learn-style wrappers for recursive/direct forecasting and backtesting
+- **mlforecast**: lag features + LightGBM for thousands of series
+- Prophet: additive trend + seasonality + holidays; easy to use, but often beaten by ETS or boosting in benchmarks
+
+???
+You can do everything today with pandas, statsmodels and scikit-learn, which is how I want you to learn it. For real projects with many series, dedicated libraries save a lot of code: statsforecast for fast classical models, mlforecast or skforecast for the lag-feature approach with backtesting built in. Prophet, which was the popular choice a few years ago, is still usable, but in published comparisons it is usually beaten by simple ETS or by boosted trees, so treat it as another baseline, not as the default. Whatever the library, the backtest protocol is your responsibility.
+
+---
+class: fit
+# Summary and where to go from here
+
+- Forecasting is regression with a clock: features must be available at forecast time
+- Validate with time-ordered splits (`TimeSeriesSplit`, `gap`), and audit every feature
+- Beat naive and seasonal naive first; report MAE/MASE, be careful with MAPE
+- Gradient boosting on calendar, weather and lag features is a strong default; mind extrapolation
+- Recursive vs. direct: decide by backtest; quantify uncertainty and check coverage
+- Further: hierarchical forecasting, state space models, Gaussian processes, conformal intervals for time series, recurrent and convolutional networks (Week 6 MLPs extend to sequences)
+
+???
+If you remember one thing: forecasting is regression where the clock decides what you are allowed to know. The rest is careful evaluation. Next week we take today's pipeline through the rest of its life: registry, serving, monitoring and drift, retraining. HW4 builds on the lab, so make sure your lab runs end to end and your MLflow runs are there.
+
+---
+class: middle
+# Questions?
+
+???
+Open the floor. If there are no questions, ask the class which result from today surprised them most; usually it is that the model without lags won, or how much shuffled cross-validation overstated the accuracy.
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (5 slides); they are not needed for the homework or the project.
+
+---
+# Time series classification
+
+.center[![:scale 60%](images/time series classification.png)]
+
+- Label a whole series (or a window): which appliance is running, which activity a phone sensor records
+
+???
+Time series classification is a different problem: you do not predict future values, you assign a label to a series or a window. Examples are recognizing appliances from a household's power signal or activities from accelerometer data. The difficulty is mostly representation: series have different lengths, so you need fixed-length features (summary statistics, spectral features, random convolution features as in ROCKET) or a model that handles sequences. We will not cover it today, but the validation lessons from today transfer.
+
+---
+# Filling gaps
+
+.smaller[
+```python
+weekly.ffill()   # carry the last observation forward
+weekly.bfill()   # carry the next observation backward: uses the future!
+weekly.interpolate(method="time")
+```
+]
+
+- Forward fill only uses the past; safe for forecasting features
+- Back-fill and interpolation look ahead: fine for plots, leakage for features
+- If you aggregate anyway (resample), you can often just drop missing values
+
+???
+The simplest imputation for time series is forward fill: take the last observed value. It is crude but it only uses information from the past. Back-fill and interpolation use the next observation, so they leak future information into the past; that is fine for a plot but not for features in a forecasting model. This is the same leakage idea as in Week 3, now along the time axis. The older `fillna(method="ffill")` API was removed in pandas 3, use `.ffill()`.
+
+---
+# Choosing the granularity
+
+.center[![:scale 70%](images/maunaloa resample.png)]
+
+???
+Weekly, yearly and three-yearly averages of the same data. At yearly resolution the seasonal oscillation disappears completely. So the choice of granularity decides which patterns your model can learn. The right choice comes from the decision you support: a climate model needs the trend, a bike operator needs the hourly pattern. Too fine and you mostly model noise; too coarse and you average away what matters.
+
+---
+# Impact of the order
+
+.left-column[
+.smaller[
+```python
+AutoReg(train, lags=6, trend="c")
+```
+]
+.center[![:scale 90%](images/impact of order 1.png)]
+]
+.right-column[
+.smaller[
+```python
+AutoReg(train, lags=25, trend="c")
+```
+]
+.center[![:scale 90%](images/impact of order 2.png)]
+]
+
+???
+With 6 lags the model cannot see a whole year, so it cannot reproduce the cycle: the forecast flattens out quickly. With 25 lags, two full cycles, the seasonal shape is good but the level still drifts. The order is a hyperparameter; you would choose it with a time-aware validation set or an information criterion like AIC, never on the test decade. The remaining error here is about the trend, which motivates differencing inside the model.
+
+---
+# Detrending with the trend model
+
+.smaller[
+```python
+residual = monthly - quad.predict(X[["t"]])
+```
+]
+
+.center[![:scale 60%](images/detrending with trend model.png)]
+
+???
+Subtracting the fitted trend leaves the seasonal cycle plus noise. This residual is much closer to stationary, so you could model it with an AR model and add the trend back. The trend model was fit on data up to 1990 only, and you can see the residual start to drift after the dashed line: the quadratic slightly misses the 1990s. This two-stage approach, trend model plus a model for the residual, is a classic and still useful idea.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

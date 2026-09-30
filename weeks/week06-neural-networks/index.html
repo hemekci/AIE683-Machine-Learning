@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>AIE683 Week 6: Neural Networks (MLP)</title>
+    <meta charset="utf-8">
+        <style>
+     </style>
+     <link rel="stylesheet" href="../../assets/style.css">
+  </head>
+  <body>
+    <textarea id="source">
+class: center, middle
+
+### AIE683 Machine Learning
+
+# Week 6: Neural Networks (MLP)
+
+Dr. Hakan Emekci
+
+Hacettepe University, Graduate School of Informatics
+
+???
+Today we add the last big supervised model family of the first half: neural networks, restricted to the multilayer perceptron (MLP). We treat it as one more model family for tabular data, next to linear models from Week 4 and tree ensembles from Week 5, not as a separate field. Convolutional, recurrent and attention-based networks are outside the scope of this course. By the end of the session you should be able to train an MLP in scikit-learn and in PyTorch, know which knobs matter, and judge honestly when it is worth using.
+
+---
+# A question you will be asked at work
+
+.left-column[
+Your team predicts **house prices** (or credit risk, churn, demand) from a table: 20 000 rows, 8–50 numeric and categorical columns.
+
+A manager asks:
+
+> "Deep learning won in images, speech and language. Shouldn't we use a neural network?"
+]
+.right-column[
+Today we answer this with evidence, not opinion:
+
+1. What an MLP computes
+2. How it is trained, and what makes training fail
+3. How to regularize and tune it
+4. Code: scikit-learn and PyTorch
+5. **Head-to-head on real data**: MLP vs gradient boosting (Week 5)
+]
+
+???
+I start with a question that many of you will face in your first ML job. Most business data is tabular, and there is constant pressure to use "deep learning" because of its success on images and text. Keep this question in mind all session; we will come back to it at the end with a measured comparison on the California housing data. Ask the class: who expects the neural network to win on a table of 20 000 houses? Take a quick show of hands and remember the count.
+
+---
+# Plan for today (3 hours)
+
+| Block | Content | Time |
+|---|---|---|
+| 1 | The model: neurons, layers, activations, outputs | 30 min |
+| 2 | Training: backprop, SGD, momentum, Adam, initialization | 40 min |
+| 3 | Regularization: weight decay, early stopping, dropout, scaling | 25 min |
+| 4 | `MLPClassifier` / `MLPRegressor` + **Try it 1** | 35 min |
+| 5 | A PyTorch training loop + MLflow + **Try it 2** | 35 min |
+| 6 | MLP vs gradient boosting + **Try it 3** | 25 min |
+
+Notebook: `lab.ipynb` in this week's folder.
+
+???
+This is the plan with rough timings, including a 10-minute break after block 2. The three "Try it" activities are hands-on; please have `lab.ipynb` open and run the setup cell during the break so the datasets are downloaded. If we fall behind, I will shorten the optimizer details, not the hands-on parts. The lab also contains all worked examples from the slides, so you can re-run everything at home.
+
+---
+# History, briefly
+
+- Most ingredients of today's lecture existed by ~1990: the perceptron (1958), backpropagation (popularized 1986), universal approximation (1989).
+- What changed after ~2010:
+  - much more data
+  - GPUs and software with automatic differentiation (PyTorch, JAX)
+  - better defaults: ReLU, good initialization, dropout, Adam, normalization layers
+- The big wins came on **images, audio and text**.
+- On **tabular data**, gradient-boosted trees remain the strong default (we will see why).
+
+???
+I keep the history short because it explains one thing: neural networks did not win because of a new idea about MLPs, but because data, hardware and training tricks caught up. Those tricks, ReLU, initialization, dropout and Adam, are exactly what we cover today. Note the asymmetry in the last two bullets: the headline successes are on perceptual data with a lot of spatial or sequential structure. Tabular data lacks that structure, and that is a large part of the story at the end of the lecture.
+
+---
+class: fit2
+# Logistic regression as a neural net
+
+.center[
+![:scale 40%](images/log_reg_nn.png)
+]
+
+`$$ \hat{y} = \sigma(w^T x + b) $$`
+
+???
+Before the MLP, let me draw a model you already know from Week 4, binary logistic regression, in the notation people use for neural networks. Circles are numbers: here four input features and one output. Each arrow multiplies the value at its origin by a weight; arrows arriving at a circle are summed, the bias is added, and a nonlinearity, here the logistic sigmoid, is applied. So one "neuron" or "unit" (the two words are synonyms) is just a logistic regression. The drawing shows only the prediction, not how the weights are fitted.
+
+---
+# One hidden layer
+
+.center[
+![:scale 42%](images/nn_basic_arch.png)
+]
+
+`$$ h(x) = f(W_1 x + b_1) \qquad o(x) = g(W_2 h(x) + b_2) $$`
+
+???
+An MLP repeats that construction. Here four inputs feed five hidden units; each hidden unit is its own weighted sum of the inputs followed by the activation function f, usually ReLU. Stacking the hidden units, this is a matrix product: W1 is 5 by 4, b1 has 5 entries. The output applies another affine map W2 (1 by 5) plus b2 and the output function g, for example a sigmoid for binary classification. Computing from input to output is called the forward pass. The layer is "hidden" because its values are not part of the output; they are internal features the model learns.
+
+---
+class: fit
+# Why the nonlinearity is essential
+
+Without `$f$`:
+
+`$$ o(x) = W_2 (W_1 x + b_1) + b_2 = \underbrace{(W_2 W_1)}_{W} x + \underbrace{(W_2 b_1 + b_2)}_{b} $$`
+
+→ still a **linear model**, however many layers.
+
+With `$f$`:
+
+- each hidden unit is a learned nonlinear feature (a "bent" hyperplane for ReLU)
+- one hidden layer with enough units can approximate any continuous function on a bounded domain (**universal approximation**)
+- the theorem says nothing about how many units, how much data, or whether training finds the weights
+
+???
+This slide answers a question students often have: why not just stack matrices? Because a composition of affine maps is affine, so without an activation function a deep network is exactly a linear model. The nonlinearity makes each hidden unit a learned basis function, similar in spirit to the polynomial or kernel features from Week 4, except that the features are fitted to the task. Be careful with the universal approximation theorem: it is an existence result. It does not tell you that gradient descent will find those weights or that you have enough data to do so, which is the practical question.
+
+---
+class: fit
+# Deeper networks
+
+.center[
+![:scale 50%](images/nn_manylayers.png)
+]
+
+- Hidden layers usually share the same activation `$f$`; each layer has its own weights.
+- Names: multilayer perceptron (MLP), fully connected / dense / feed-forward network.
+- "Deep learning" = many hidden layers.
+
+???
+We can stack as many hidden layers as we like: input layer (1), hidden layers (2), output layer (3). Each layer has its own weight matrix and bias, and all hidden layers typically use the same activation. MLP, feed-forward network and fully connected network are used interchangeably. Depth and width both add capacity; a useful rule of thumb for tabular data is that two or three hidden layers are usually enough, and width matters more than depth. Ask: how many parameters does a network 8 → 128 → 128 → 1 have? We compute it in two slides.
+
+---
+# Activation functions
+
+.center[
+![:scale 85%](images/nonlin_fn.png)
+]
+
+???
+The three classic choices. Sigmoid and tanh saturate: for large positive or negative inputs the derivative is almost zero, so gradients passed backwards through many such layers shrink, the vanishing gradient problem. ReLU, max(0, z), has derivative one for positive inputs, is cheap to compute, and is the default for hidden layers today. Its failure mode is "dead" units that are always negative and never receive gradient; variants such as Leaky ReLU, ELU or GELU keep a small slope for negative inputs, and GELU/SiLU are common in modern libraries. For small tabular MLPs, the choice among these rarely matters more than learning rate and regularization.
+
+---
+# Output layer and loss follow the task
+
+| Task | Output units | Output `$g$` | Loss |
+|---|---|---|---|
+| Regression | 1 (per target) | identity | squared error |
+| Binary classification | 1 | sigmoid | binary cross-entropy (log loss) |
+| Multiclass (k classes) | k | softmax | cross-entropy |
+
+- Same choices as linear models in Week 4: an MLP is a GLM on learned features.
+- In PyTorch, pass **logits** to `BCEWithLogitsLoss` / `CrossEntropyLoss`; they apply sigmoid/softmax internally (numerically stable).
+
+???
+The output layer is not a new idea: it is exactly what you did with linear and logistic regression, applied to the last hidden layer instead of the raw features. That is why I like the phrase "a generalized linear model on learned features". The PyTorch remark prevents a common bug: if you add a softmax layer and then use CrossEntropyLoss, you apply softmax twice and training becomes slow and poorly calibrated. The loss functions expect raw scores, called logits.
+
+---
+# Counting parameters
+
+Network 8 → 128 → 128 → 1 (California housing):
+
+| Layer | Weights | Biases | Total |
+|---|---|---|---|
+| 8 → 128 | 8 · 128 = 1 024 | 128 | 1 152 |
+| 128 → 128 | 16 384 | 128 | 16 512 |
+| 128 → 1 | 128 | 1 | 129 |
+| **Total** | | | **17 793** |
+
+- A layer from `$n_{in}$` to `$n_{out}$` units has `$(n_{in}+1)\,n_{out}$` parameters.
+- Width grows the count quadratically; the first layer grows with the number of features (one-hot encoding!).
+
+???
+Let us count, since the number of parameters is one of our complexity controls. Each layer has n_in times n_out weights plus n_out biases. The middle layer dominates because it is quadratic in width. Compare this to 16 000 training rows: the network has more parameters than we have samples, which already tells you that regularization will matter. Also notice that one-hot encoding a high-cardinality categorical feature from Week 3 inflates the first layer; embeddings are the neural-network answer, but that is beyond today.
+
+---
+# Training objective
+
+`$$ \min_{W_1, b_1, W_2, b_2} \; \frac{1}{N}\sum_{i=1}^N \ell\big(y_i,\; g(W_2 f(W_1 x_i + b_1) + b_2)\big) \;+\; \lambda \sum_l \|W_l\|_2^2 $$`
+
+--
+
+- Same empirical risk minimization as in Week 4, with a more complex model.
+- **Not convex**: many local minima and saddle points; the result depends on initialization, optimizer, learning rate, batch size.
+- We are satisfied with a "good" solution, judged on **validation data**.
+
+???
+Formally nothing is new: minimize the average loss on the training data plus a penalty, as for ridge or logistic regression. The difference is that the objective is not convex in the weights. For instance, you can permute the hidden units and get the same function, so there are always many equivalent minima. In practice we do not look for the global optimum at all; we look for weights that generalize, and we decide that on validation data. This is why the optimizer and early stopping act partly as regularizers, which is unusual compared to earlier weeks.
+
+---
+class: fit
+# Backpropagation = chain rule, organized
+
+Need `$\frac{\partial \ell}{\partial W_l}$` for every layer. With `$\text{net}(x) = W_1x + b_1$`:
+
+.center[![:scale 60%](images/backprop_eqn.png)]
+
+- **Forward pass**: compute and store every layer's activations.
+- **Backward pass**: from the loss back to the input, multiply local derivatives.
+- Cost of the backward pass ≈ 2 × forward pass. It computes gradients; it is **not** an optimizer.
+
+???
+To use gradient descent we need the gradient of the loss with respect to every weight. Backpropagation is simply the chain rule applied in a clever order. The gradient for the first weight matrix is a product of three terms: the gradient arriving from the layer above, the derivative of the activation, and the input to the layer. All of these are available if we store the activations during the forward pass, so one sweep backwards gives all gradients. Two misconceptions to correct: backprop is not a learning algorithm by itself, and it is not specific to neural networks; it is reverse-mode automatic differentiation.
+
+---
+# But ReLU is not differentiable at 0
+
+.center[
+![:scale 55%](images/relu_differentiability.png)
+]
+
+- Use a **subgradient**: any slope in [0, 1] at `$z = 0$`; libraries pick 0.
+- In floating point, exactly 0 almost never occurs.
+
+???
+A mathematically minded student will object that ReLU has a kink at zero, so the gradient does not exist there. At that single point any slope between zero and one is a valid subgradient, and frameworks simply use zero. Because pre-activations are floating point numbers, hitting exactly zero is extremely rare, so this has no practical effect. The same argument covers the absolute value in the L1 penalty from Week 4.
+
+---
+# Automatic differentiation in PyTorch
+
+```python
+import torch
+w = torch.tensor([1.0, -2.0], requires_grad=True)
+x = torch.tensor([3.0, 4.0])
+loss = torch.relu(w @ x + 1.0) ** 2   # forward pass records a graph
+loss.backward()                        # backward pass: reverse-mode autodiff
+print(loss.item(), w.grad)
+```
+```
+0.0 tensor([0., 0.])
+```
+
+- Every operation records how to compute its local derivative.
+- `backward()` walks the recorded graph from the loss to the parameters.
+- You write the forward pass only; gradients come for free.
+
+???
+In practice nobody derives backprop by hand anymore. PyTorch records every operation on tensors with requires_grad and, on backward(), applies the chain rule through that graph. I chose this example on purpose: w·x + 1 = 3 − 8 + 1 = −4, ReLU is zero there, so the loss and the gradient are both zero. That is a "dead" unit for this input. Ask the class to change w so that the unit is active and predict the gradient before running it; it is 2·(w·x+1)·x.
+
+---
+class: fit
+# Gradient descent variants
+
+Batch:
+`$$ W \leftarrow W - \eta \frac{1}{N}\sum_{i=1}^N \nabla_W \ell(x_i, y_i) $$`
+--
+Stochastic (one sample):
+`$$ W \leftarrow W - \eta\, \nabla_W \ell(x_i, y_i) $$`
+--
+**Mini-batch** (`$B$` samples, typically 32–512):
+`$$ W \leftarrow W - \eta \frac{1}{|B|}\sum_{i \in B} \nabla_W \ell(x_i, y_i) $$`
+
+One pass over the training data = one **epoch**.
+
+???
+You met gradient descent and SGD for linear models in Week 5; the same three variants apply. Full-batch gradients are accurate but each step costs a full pass over the data. Single-sample SGD is cheap per step but noisy and does not use vectorized hardware well. Mini-batches are the standard compromise: a matrix-matrix product over 256 rows is almost as fast as one row, and the gradient noise is moderate. The noise is not only a nuisance; it helps escape sharp regions and acts as a mild regularizer. Make sure everyone knows the word epoch, because all training curves are plotted per epoch.
+
+---
+# The learning rate matters most
+
+.center[
+![:scale 60%](images/learning_rate.png)
+]
+
+`MLPClassifier(solver="sgd", momentum=0)` on breast cancer, scaled inputs.
+
+???
+If you tune only one hyperparameter of a neural network, tune the learning rate. Too small and training crawls, blue and orange here; too large and the loss explodes, the purple curve diverges immediately. The best value here, 1, is unusually large because the problem is tiny and well scaled; for most networks it is between 1e-4 and 1e-1. Note that this plot shows training loss; a very low training loss, as for the yellow curve, may simply mean overfitting. Try values on a log scale, as for regularization parameters in Week 4.
+
+---
+# Momentum
+
+`$$ v \leftarrow \beta v + \nabla_W \ell, \qquad W \leftarrow W - \eta v \qquad (\beta \approx 0.9)$$`
+
+- Keeps a running direction: damps oscillation across steep directions, accelerates along shallow ones.
+- Effective step size ≈ `$\eta/(1-\beta)$`: lower `$\eta$` when adding momentum.
+- Nesterov momentum: evaluate the gradient at the look-ahead point; usually slightly better.
+
+???
+Momentum is the heavy-ball method: we accumulate a velocity and step along it. On a long narrow valley, plain gradient descent bounces between the walls and moves slowly along the floor; momentum averages the bouncing out and builds up speed along the floor. The practical detail students miss: with beta 0.9 the effective learning rate is about ten times larger, so a learning rate that works for plain SGD can make momentum diverge. We will see exactly that in the PyTorch comparison.
+
+---
+class: fit2
+# Adaptive learning rates: Adam
+
+`$$ m \leftarrow \beta_1 m + (1-\beta_1) g, \qquad s \leftarrow \beta_2 s + (1-\beta_2) g^2 $$`
+`$$ W \leftarrow W - \eta \frac{\hat m}{\sqrt{\hat s} + \epsilon} \qquad (\hat m, \hat s \text{ bias-corrected}) $$`
+
+- Per-parameter step sizes: large for rarely/weakly updated weights, small for noisy ones.
+- Defaults `$\beta_1=0.9, \beta_2=0.999, \eta=10^{-3}$` work surprisingly often.
+- Relatives: AdaGrad, RMSProp. Use **AdamW** (decoupled weight decay) when you regularize.
+
+.smallest[Kingma & Ba, *Adam*, ICLR 2015 · Loshchilov & Hutter, *Decoupled Weight Decay Regularization*, ICLR 2019]
+
+???
+Adam combines momentum, the first moment m, with a per-parameter scaling by the running root mean square of the gradients, the second moment s. Dividing by the square root of s makes the step roughly scale-free per weight, which is why Adam is forgiving about feature scales and learning rates. AdamW fixes a subtle issue: in plain Adam, an L2 penalty added to the loss is rescaled by the adaptive denominator, so it no longer behaves like weight decay; AdamW applies the decay directly to the weights. Today, AdamW with a learning rate around 1e-3 is the default starting point for MLPs.
+
+---
+# Optimizers on an ill-conditioned problem
+
+.center[
+![:scale 70%](images/optimizer_paths.png)
+]
+
+???
+Here are the three update rules on a simple quadratic bowl that is twenty times steeper in w2 than in w1, a caricature of a badly conditioned loss surface. Gradient descent, blue, zig-zags across the steep direction, and its learning rate is limited by that steep direction, so it creeps along w1. Momentum, orange, overshoots but moves faster along the valley. Adam, green, rescales each coordinate and heads almost straight to the minimum. Real loss surfaces are not quadratics, so treat this as intuition, not a benchmark.
+
+---
+class: fit
+# Non-convexity: results depend on the seed
+
+.center[
+![:scale 62%](images/random_state.png)
+]
+
+`MLPClassifier(solver="lbfgs")` with 100 hidden units, 75 training points, 9 different `random_state` values.
+
+???
+Because the objective is not convex, different random initializations end in different solutions. Same data, same hyperparameters, only the seed differs, and test accuracy ranges from 0.84 to 0.92 on 25 test points. With so few test points, part of that range is noise, but the decision boundaries clearly differ. Two consequences: always fix and report the seed, and when comparing models, report the mean and spread over several seeds, a topic we return to in Week 8 on statistical model comparison.
+
+---
+class: fit2
+# Initialization
+
+- All zeros → every unit in a layer gets the same gradient forever (**symmetry**). Use random weights.
+- The **scale** of the random weights controls whether signals and gradients vanish or explode:
+
+.center[
+![:scale 72%](images/init_scale.png)
+]
+
+Glorot/Xavier: `$\text{Var}(W) = 1/n_{in}$` (tanh, variants use `$2/(n_{in}+n_{out})$`) · He/Kaiming: `$2/n_{in}$` (ReLU)
+
+???
+If all weights start equal, all hidden units compute the same function and receive the same update, so they stay identical; random initialization breaks this symmetry. The scale matters too. This plot pushes random data through ten layers of 256 units: with tiny weights the activations shrink by a constant factor per layer, blue; with unit-variance weights in a ReLU network they explode by a factor of about 11 per layer, yellow. Glorot initialization keeps tanh networks stable, He initialization keeps ReLU networks stable, since ReLU zeroes half of its inputs. Frameworks do this for you by default, but when you see NaNs or a network that does not learn at all, check initialization and input scaling first.
+
+---
+# Scale your inputs
+
+.center[
+![:scale 58%](images/scaling_effect.png)
+]
+
+- Same `MLPClassifier` (Adam, defaults), breast cancer data, raw vs `StandardScaler`.
+- Fit the scaler on training data only: put it in a `Pipeline` (Week 3).
+
+???
+Neural networks, like SVMs and regularized linear models from Week 4, are sensitive to feature scales; in practice even more so, because initialization assumes inputs of roughly unit variance. On the breast cancer data some features are in the thousands and others below one. Unscaled, the loss is still high after 300 epochs and test accuracy is 0.92; scaled, training converges quickly and test accuracy is 0.96. The scaler must be fitted on training folds only, which is exactly the leakage lesson from Week 3, so always use a pipeline. Trees from Week 5 did not care about scaling; this is one practical difference.
+
+---
+class: center, middle
+
+# Regularization
+
+???
+We now have a model with more parameters than training samples. The next block is about controlling that capacity. We have four tools: the size of the network, a weight penalty, early stopping and dropout.
+
+---
+# Complexity control for MLPs
+
+| Knob | Effect | scikit-learn | PyTorch |
+|---|---|---|---|
+| Size (width, depth) | fewer parameters | `hidden_layer_sizes` | layer sizes |
+| L2 / weight decay | shrink weights | `alpha` | `weight_decay` in `AdamW` |
+| Early stopping | stop before overfitting | `early_stopping=True` | your loop |
+| Dropout | noise on hidden units | — | `nn.Dropout(p)` |
+
+A common recipe: a network somewhat **too large**, then regularize and early-stop.
+
+???
+This table summarizes the next slides. A classical approach would pick the smallest network that fits; modern practice tends to take a network that is somewhat too big, which makes optimization easier, and then control overfitting with weight decay, dropout and early stopping. Note that scikit-learn has no dropout, one of the reasons to move to PyTorch later. None of these knobs is "the" right one; we tune them on validation data like any other hyperparameter.
+
+---
+class: fit2
+# L2 penalty (weight decay)
+
+`$$ \min_W \; \frac{1}{N}\sum_i \ell(y_i, o(x_i)) + \alpha \sum_l \|W_l\|_2^2 $$`
+
+.smaller[
+```python
+pipe = make_pipeline(StandardScaler(),
+                     MLPClassifier(solver="lbfgs", max_iter=2000, random_state=1))
+param_grid = {"mlpclassifier__alpha": np.logspace(-3, 3, 7)}
+grid = GridSearchCV(pipe, param_grid, return_train_score=True).fit(X_train, y_train)
+```]
+
+.center[![:scale 45%](images/gridsearch_plot.png)]
+
+???
+This is the same ridge penalty as in Week 4, applied to all weight matrices; biases are usually not penalized. In scikit-learn the parameter is alpha. On the breast cancer data with five-fold cross-validation, small alpha fits the training folds perfectly while validation accuracy stays around 0.98; very large alpha shrinks the network towards a constant and accuracy collapses to the majority rate of 0.63. The best value here is 10, but notice how flat the curve is for small alpha: with 400 samples the differences are within one standard deviation. Ask: why does the training score stay at 1.0 for small alpha even though alpha changes?
+
+---
+# Network size
+
+.smaller[
+```python
+param_grid = {"mlpclassifier__hidden_layer_sizes":
+              [(10,), (50,), (100,), (500,), (10, 10), (50, 50), (100, 100), (500, 500)]}
+grid = GridSearchCV(pipe, param_grid, return_train_score=True).fit(X_train, y_train)
+```]
+
+.center[![:scale 55%](images/search_hidden_layers_plot.png)]
+
+???
+We can search over architectures the same way; hidden_layer_sizes is a tuple with one entry per hidden layer. On this small dataset every network fits the training data perfectly and validation accuracy varies by about two points, mostly within the error bars. The lesson is that architecture is often less important than you might think, and that tuning width, depth and alpha jointly quickly becomes expensive. In Week 8 we will use randomized search and Optuna for this instead of full grids.
+
+---
+# Early stopping
+
+.center[
+![:scale 55%](images/training_curves.png)
+]
+
+- Monitor the loss on a **validation set** after each epoch; stop when it has not improved for `patience` epochs; **restore the best weights**.
+- scikit-learn: `early_stopping=True, validation_fraction=0.1, n_iter_no_change=10`.
+
+???
+Early stopping is the most used regularizer for neural networks. We track validation loss each epoch and stop when it has not improved for a number of epochs, then roll back to the best weights. Why is this a regularizer? Starting from small random weights, gradient descent increases model complexity gradually, and for linear models early stopping is known to act much like an L2 penalty; stopping early limits how far the weights move. This curve is our PyTorch MLP on California housing: the best epoch was 68 of 78, and the training loss is higher than you might expect because dropout is active during training. The validation set used for stopping is part of model selection, so it must not be your test set.
+
+---
+class: fit
+# Dropout
+
+.center[
+![:scale 58%](images/dropout_diagram.png)
+]
+
+- In each training step, set each hidden unit to 0 with probability `$p$` (0.1–0.5); rescale survivors by `$1/(1-p)$`.
+- At prediction time: use all units, no noise (`model.eval()`).
+- Interpretation: training an ensemble of thinned networks that share weights.
+
+.smallest[Srivastava et al., *Dropout*, JMLR 2014]
+
+???
+Dropout randomly removes hidden units in each training step, a different subset for every mini-batch. The network cannot rely on any single unit and must spread information, which reduces co-adaptation and overfitting. Implementations use "inverted dropout": they scale the surviving activations up during training, so nothing changes at prediction time except turning the noise off. In PyTorch that is the difference between model.train() and model.eval(), and forgetting model.eval() is one of the most common bugs, which you will hunt in Try it 2. For small tabular MLPs, rates of 0.1 to 0.3 are typical; 0.5 is common for very wide layers.
+
+---
+class: center, middle
+
+# MLPs in scikit-learn
+
+???
+Now to code. scikit-learn's MLP implementation is simple, CPU only, and fits into all the tools we already know: pipelines, cross-validation, grid search. That makes it the right starting point before PyTorch.
+
+---
+# `MLPClassifier` on two moons
+
+.center[
+![:scale 45%](images/nn_sklearn.png)
+]
+
+.smaller[
+```python
+mlp = MLPClassifier(solver="lbfgs", max_iter=1000, random_state=0).fit(X_train, y_train)
+print(mlp.score(X_train, y_train), mlp.score(X_test, y_test))
+```
+```
+1.0 0.84
+```
+]
+
+???
+Our familiar two-moons toy data with 75 training points, so we can see the decision boundary. The default network has one hidden layer with 100 ReLU units, about 400 parameters for 75 points, and it fits the training set perfectly with a jagged boundary. Test accuracy is 0.84. I use lbfgs here because the dataset is tiny; with the default Adam solver you would need many more iterations. The boundary consists of piecewise linear pieces, one kink per active ReLU unit.
+
+---
+# Hidden layer size
+
+.left-column[
+.smaller[
+```python
+mlp = MLPClassifier(solver="lbfgs",
+    hidden_layer_sizes=(5,),
+    max_iter=1000, random_state=0)
+```
+```
+train 0.97  test 0.84
+```
+]
+.center[![:scale 90%](images/hidden_layer_size.png)]
+]
+.right-column[
+.smaller[
+```python
+mlp = MLPClassifier(solver="lbfgs",
+    hidden_layer_sizes=(10, 10, 10),
+    max_iter=1000, random_state=0)
+```
+```
+train 0.97  test 0.84
+```
+]
+.center[![:scale 90%](images/hidden_layer_size_2.png)]
+]
+
+???
+hidden_layer_sizes is a tuple: its length is the number of hidden layers, each entry the width. Note the trailing comma in (5,); without it you pass the integer 5, which scikit-learn will also accept but it is a common source of confusion. With five units the boundary is made of a few straight segments. Three layers of ten units give a different, smoother boundary with the same scores. On data this small, test accuracy barely distinguishes these models; 25 test points means one point is four percentage points.
+
+---
+# `MLPRegressor`
+
+.center[
+![:scale 50%](images/regression_plot.png)
+]
+
+.smaller[
+```python
+mlp_relu = MLPRegressor(solver="lbfgs", max_iter=2000, random_state=0).fit(X, y)
+mlp_tanh = MLPRegressor(solver="lbfgs", activation="tanh", max_iter=2000, random_state=0).fit(X, y)
+```]
+
+???
+Regression works the same way, with identity output and squared loss. The ReLU network produces a piecewise linear fit, the tanh network a smooth one. Outside the range of the training data, which this plot does not show, a ReLU network continues linearly and a tanh network flattens out. Compare this to trees in Week 5, which are constant outside the training range. None of these models extrapolates reliably.
+
+---
+# Try it 1: can an MLP beat logistic regression on credit risk?
+
+**Data**: German credit (`fetch_openml("credit-g")`), 1 000 applicants, 20 features (13 categorical). Target: good / bad credit.
+
+**Task** (12 min, `lab.ipynb`, section *Try it 1*):
+
+1. Build a pipeline: `ColumnTransformer` (one-hot + scaling) → `MLPClassifier`.
+2. Compare with `LogisticRegression` using 5-fold CV and ROC AUC.
+3. Tune `alpha` and `hidden_layer_sizes` with `GridSearchCV`. Can you beat logistic regression by more than one standard deviation?
+
+Write down your prediction before you run anything.
+
+???
+This is the first hands-on block. It combines preprocessing from Week 3, logistic regression from Week 4 and today's MLP on a small, real, messy dataset. Give students two minutes to predict, then ten minutes to work in pairs. My expectation, which you can verify in the solution: a well-tuned MLP roughly matches logistic regression but does not clearly beat it on 1 000 rows, and its scores vary more across folds. The discussion point is that small tabular data rarely rewards a flexible model; ask who got the best AUC and how many configurations they tried, which sets up the multiple-comparisons issue for Week 8.
+
+---
+# Limits of scikit-learn's MLP
+
+- CPU only, no GPU.
+- Fixed architecture: dense layers, one activation, no dropout, no normalization layers.
+- One loss per estimator; no custom losses, multiple inputs, or embeddings for categories.
+- Fine for small and medium tabular problems, teaching, and baselines.
+
+→ For anything more flexible: **PyTorch** (or JAX; Keras 3 is a high-level API over JAX, PyTorch or TensorFlow).
+
+???
+scikit-learn intentionally keeps its neural network simple. Once you need dropout, a custom loss, categorical embeddings, a GPU or a model that combines a table with other inputs, you need a deep learning framework. In 2026 PyTorch is the dominant choice in research and much of industry; JAX is common in some research groups, and Keras 3 is a high-level API that runs on JAX, PyTorch or TensorFlow. We use PyTorch because it is installed in the course environment and its training loop is explicit, which is good for learning what happens in each step.
+
+---
+class: center, middle
+
+# A PyTorch training loop
+
+???
+The following slides show the complete code for a small MLP regressor in PyTorch on California housing. It is about 40 lines, and every line corresponds to a concept from the first half of the lecture. The same code is in the lab.
+
+---
+# Data: tensors and a `DataLoader`
+
+.smaller[
+```python
+import torch
+from torch import nn
+from torch.utils.data import TensorDataset, DataLoader
+
+X, y = fetch_california_housing(return_X_y=True)          # 20 640 districts, 8 features
+X_trval, X_test, y_trval, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
+X_train, X_val, y_train, y_val = train_test_split(X_trval, y_trval, test_size=0.2, random_state=0)
+
+scaler = StandardScaler().fit(X_train)                     # fit on training data only
+def to_t(X, y):
+    return (torch.tensor(scaler.transform(X), dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32).unsqueeze(1))
+Xtr, ytr = to_t(X_train, y_train); Xva, yva = to_t(X_val, y_val); Xte, yte = to_t(X_test, y_test)
+
+loader = DataLoader(TensorDataset(Xtr, ytr), batch_size=256, shuffle=True)
+```]
+
+???
+The target is the median house value per California district in units of 100 000 dollars, with features such as median income, house age and location. We split into training, validation for early stopping, and test. The scaler is fitted on the training part only. PyTorch works with float32 tensors, and the regression target needs shape (n, 1) to match the network's output, which is what unsqueeze does; a shape mismatch here silently broadcasts in the loss, a classic bug. The DataLoader shuffles and yields mini-batches of 256 rows each epoch.
+
+---
+# Model and optimizer
+
+.smaller[
+```python
+def make_mlp(n_in, hidden=(128, 128), dropout=0.1):
+    layers, d = [], n_in
+    for h in hidden:
+        layers += [nn.Linear(d, h), nn.ReLU(), nn.Dropout(dropout)]
+        d = h
+    layers.append(nn.Linear(d, 1))                 # identity output for regression
+    return nn.Sequential(*layers)
+
+torch.manual_seed(0)
+model = make_mlp(X.shape[1])
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+loss_fn = nn.MSELoss()
+print(sum(p.numel() for p in model.parameters()))  # 17 793
+```]
+
+- `nn.Linear` uses a Kaiming-style uniform initialization by default.
+
+???
+nn.Sequential chains layers: Linear is the affine map, ReLU the activation, Dropout the noise. This is the 8 → 128 → 128 → 1 network from the parameter-counting slide, and the printed count, 17 793, matches our hand calculation. The optimizer receives the parameters it should update; AdamW with weight decay implements the L2-type regularization. We fix the seed because initialization and shuffling are random.
+
+---
+# The training loop
+
+.smaller[
+```python
+best_val, best_state, best_epoch, patience = float("inf"), None, 0, 10
+for epoch in range(150):
+    model.train()                                   # dropout on
+    for xb, yb in loader:
+        opt.zero_grad()                             # clear old gradients
+        loss = loss_fn(model(xb), yb)               # forward pass
+        loss.backward()                             # backward pass (autodiff)
+        opt.step()                                  # AdamW update
+    model.eval()                                    # dropout off
+    with torch.no_grad():
+        val_loss = loss_fn(model(Xva), yva).item()
+    if val_loss < best_val:
+        best_val, best_state, best_epoch = val_loss, copy.deepcopy(model.state_dict()), epoch
+    elif epoch - best_epoch >= patience:
+        break                                       # early stopping
+model.load_state_dict(best_state)                  # restore best weights
+```]
+
+???
+This is the heart of it. Four lines per mini-batch: zero the gradients, because PyTorch accumulates them by default; forward pass and loss; backward pass; optimizer step. After each epoch we switch to evaluation mode, compute the validation loss without recording gradients, keep a copy of the best weights, and stop if there was no improvement for ten epochs. Finally we restore the best weights. Every concept from the first hour appears here: mini-batch SGD, backprop, Adam, weight decay, dropout, early stopping.
+
+---
+# Result
+
+.center[
+![:scale 55%](images/training_curves.png)
+]
+
+Stopped after 78 epochs, best epoch 68, test `$R^2 = 0.79$` (a few seconds on 2 CPU threads).
+
+???
+Training stopped after 78 epochs and restored epoch 68. Test R squared is 0.79, compared with 0.59 for ridge regression on the same split. Note that validation loss is sometimes below training loss: the training loss is averaged over an epoch with dropout active, while validation uses the full network at the end of the epoch. The bumps in the validation curve are typical of mini-batch training with a constant learning rate; a decaying schedule would smooth them.
+
+---
+class: fit
+# Comparing optimizers on the same network
+
+.center[
+![:scale 55%](images/optimizers_torch.png)
+]
+
+- Same network, data and seed, 60 epochs each.
+- Momentum needed a **smaller** learning rate (0.003); with 0.01 it diverged repeatedly.
+
+???
+Here I trained the same network with three optimizers, no early stopping. Plain SGD with learning rate 0.01 is slowest. SGD with momentum and AdamW reach similar validation loss; AdamW gets there faster and needed no tuning. When I first ran momentum with the same learning rate as plain SGD, the validation loss spiked to large values several times, exactly the effective-step-size effect from the momentum slide. This is a single run, so do not read the small gap between momentum and AdamW as a general ranking.
+
+---
+# Logging training runs to MLflow
+
+.smaller[
+```python
+import mlflow
+mlflow.set_experiment("week06-neural-networks")
+
+params = {"hidden": "128-128", "dropout": 0.1, "lr": 1e-3, "weight_decay": 1e-4,
+          "batch_size": 256, "optimizer": "AdamW", "patience": 10}
+with mlflow.start_run(run_name="torch-mlp"):
+    mlflow.log_params(params)
+    for epoch in range(len(hist["val"])):
+        mlflow.log_metrics({"train_loss": hist["train"][epoch],
+                            "val_loss": hist["val"][epoch]}, step=epoch)
+    mlflow.log_metrics({"best_epoch": best_epoch, "test_r2": test_r2})
+```]
+
+- `step=` turns metrics into **curves** in the MLflow UI; compare runs side by side.
+- `uv run mlflow ui` in the week folder, then open http://127.0.0.1:5000.
+
+???
+Since Week 2, our notebooks log experiments to MLflow. For neural networks, the per-epoch curves are the most useful thing to log: pass the epoch as step, and the UI plots training and validation loss as curves that you can overlay across runs. Log every hyperparameter that could change the result, including the seed and batch size. In practice you would call log_metrics inside the training loop, so that curves appear while training is running; in the lab we log after training to keep the loop readable. Week 8 goes deeper into experiment tracking and Week 12 into logging and registering the model itself.
+
+---
+# What goes wrong in practice
+
+| Symptom | Likely cause |
+|---|---|
+| Loss is `nan` or explodes | learning rate too high; unscaled inputs or targets |
+| Loss barely moves | learning rate too low; dead ReLUs; forgot `opt.step()` |
+| Training loss decreases then jumps up | learning rate too high; no schedule |
+| Great validation, poor test | tuned/early-stopped on the test set; leakage (scaler fitted on all data) |
+| Predictions change between calls | forgot `model.eval()` (dropout active) |
+| Loss is strangely noisy/large | forgot `opt.zero_grad()` (gradients accumulate) |
+| Regression loss plateaus high | target shape `(n,)` vs output `(n, 1)` broadcast in `MSELoss` |
+
+???
+This slide collects the failures I see most often in student projects and in industry code. The first three are optimization problems; always look at the loss curve before anything else. The fourth is an evaluation problem and connects to the leakage discussion from Week 3. The last three are PyTorch-specific bugs that do not raise errors, which makes them dangerous; the shape bug produces only a warning and silently computes the wrong loss. In the next activity you will find some of these in real code.
+
+---
+# Try it 2: find the bugs
+
+The lab contains a training loop, `buggy_train()`, for the California housing MLP. It **runs without errors** but trains badly.
+
+**Task** (12 min, `lab.ipynb`, section *Try it 2*):
+
+1. Run it and look at the training and validation curves. What looks wrong?
+2. Find the **three** planted bugs (use the table on the previous slide).
+3. Fix them one at a time and log each version as an MLflow run, so you can compare the curves in the UI.
+
+Target: validation MSE below 0.35.
+
+???
+Students work in pairs. The three bugs are: the inputs are not scaled, opt.zero_grad() is missing, and model.eval() is missing before validation so dropout stays on. Each one alone still produces a model that "sort of" works, which is realistic. As provided, the buggy loop ends at a validation MSE of about 1.47; the fixed loop reaches about 0.34 in the same 30 epochs. Encourage them to fix one bug at a time and observe the effect in the curves rather than rewriting the loop; logging each variant to MLflow makes the comparison visual. Spend the last three minutes asking which bug had the largest effect; typically, missing input scaling does.
+
+---
+class: center, middle
+
+# MLP vs gradient boosting on tabular data
+
+???
+Back to the manager's question from the first slide. We now compare an MLP with the gradient boosting models from Week 5 on the same data, with honest settings for both.
+
+---
+# California housing: the numbers
+
+.center[
+![:scale 85%](images/mlp_vs_gbm.png)
+]
+
+Same train/test split; default `HistGradientBoostingRegressor`, lightly tuned MLPs.
+
+???
+Here is the result. Ridge regression reaches 0.59, both MLPs about 0.79, and default histogram gradient boosting 0.84, while training in a fraction of a second. Remember the show of hands from the start of the lecture. Note that this is one split and one dataset and the boosting model was not even tuned, so the gap would likely grow with tuning; a careful comparison would use repeated cross-validation, as we will do in Week 8. The MLP is a clear improvement over the linear model, so it is not a bad model; it is just not the best tool here.
+
+---
+class: fit
+# What the benchmarks say
+
+- Large benchmarks on medium-sized tabular datasets (~10k rows): tree ensembles (XGBoost, LightGBM, CatBoost, HistGradientBoosting) win most often, with far less tuning.
+- Why trees fit tabular data well:
+  - robust to uninformative features and to feature scales
+  - target functions are often irregular / non-smooth; MLPs are biased towards smooth functions
+  - features have individual meaning; an MLP mixes them (rotation invariance)
+- Well-tuned and regularized MLPs can close much of the gap, at a much higher tuning cost.
+
+.smallest[Grinsztajn, Oyallon & Varoquaux, *Why do tree-based models still outperform deep learning on typical tabular data?*, NeurIPS 2022 Datasets & Benchmarks · Shwartz-Ziv & Armon, *Tabular data: Deep learning is not all you need*, Information Fusion 2022 · Kadra et al., *Well-tuned simple nets excel on tabular datasets*, NeurIPS 2021]
+
+???
+Our single example agrees with systematic benchmarks. Grinsztajn and colleagues identified concrete reasons: trees are not hurt much by irrelevant columns, handle irregular target functions with sharp thresholds, and respect that each column has its own meaning, whereas the first layer of an MLP mixes all features. Kadra and colleagues showed that an MLP with a carefully tuned combination of regularizers can be competitive, which is the fair counterpoint. Research on deep models for tables continues, but for a new tabular problem gradient boosting remains the default first model.
+
+---
+# When an MLP is a reasonable choice on tables
+
+- Very large datasets (hundreds of thousands of rows and more), mostly smooth numeric features
+- The model must be trained end-to-end with other inputs (text, images) or share representations across tasks
+- Multi-output or custom losses, differentiable pipelines
+- Online / incremental learning (`partial_fit`, streaming updates)
+- **Ensembles**: averaging an MLP with a boosted model often beats both (errors are less correlated)
+
+Default workflow: linear baseline → gradient boosting → (MLP if one of the above applies) → compare with proper CV.
+
+???
+So the honest answer to the manager is "not first, but sometimes". MLPs make sense when the data are large and smooth, when you need gradients through the whole system, or when you must combine the table with other modalities. A practical trick from competitions: because MLPs and trees make different kinds of errors, a simple average of both often beats each one. The last line is the workflow I expect in your projects: start with a linear baseline and gradient boosting, and add a neural network only with a reason, compared under the same cross-validation protocol.
+
+---
+# Try it 3: predict the winner, then run it
+
+**Data**: forest cover type (`fetch_covtype`), 54 cartographic features, 7 classes; we use a 30 000-row subsample (16 000 train, 4 000 validation, 10 000 test).
+
+**Task** (12 min, `lab.ipynb`, section *Try it 3*):
+
+1. Write your prediction in the notebook: MLP or `HistGradientBoostingClassifier`, and by how much (accuracy)?
+2. Train both on the same split (templates provided; each fits in seconds).
+3. Make one change to improve either model, judged on **validation** accuracy (at most 2 minutes of fitting). Evaluate on the test set once, at the end.
+
+???
+The last activity is a small competition. Covertype is a classic tabular benchmark with mostly numeric features plus one-hot encoded soil and wilderness types. Ask for predictions first and collect them on the board. Covertype is a counterexample to a too-simple reading of the previous slides: with smooth, mostly numeric geographic features, the race is close. In my runs the default MLP reaches about 0.80 validation accuracy, default boosting about 0.82, and a wider MLP (256, 256) about 0.82, with test accuracy 0.81 for the chosen model. So the lesson is not "trees always win" but "compare under the same protocol and budget". Only evaluate the test score once per group at the very end, which previews the model selection discipline from Week 8.
+
+---
+# Summary
+
+- An MLP = stacked affine maps + nonlinearities; output layer and loss as in GLMs.
+- Training: backprop computes gradients; mini-batch SGD / momentum / **AdamW** update; initialization and **input scaling** decide whether training works at all.
+- Regularize with size, weight decay, **early stopping**, dropout; tune on validation data; fix seeds.
+- scikit-learn `MLPClassifier`/`MLPRegressor` for baselines; PyTorch for flexibility; log curves to MLflow with `step=`.
+- On tabular data, gradient boosting is the stronger default; MLPs are a complement, not a replacement.
+
+???
+Five points to take home. If you remember only one practical rule: scale inputs, start with AdamW at 1e-3, use early stopping, and look at the loss curves. If you remember one conceptual point: the MLP is a linear model on learned features, trained by non-convex optimization, so its results depend on choices that were irrelevant for convex models.
+
+---
+# Next week
+
+**Week 7: Evaluation**
+
+- Metrics beyond accuracy: precision, recall, ROC and PR curves
+- Calibration of predicted probabilities
+- Imbalanced data and choosing decision thresholds
+
+Before next week: finish the three *Try it* sections in `lab.ipynb`.
+
+???
+Next week we move from building models to evaluating them properly. Today we used accuracy, R squared and ROC AUC without much discussion; next week we ask which metric fits which decision, whether predicted probabilities can be trusted, and what to do when one class is rare, as in the credit data from Try it 1. Please finish the lab exercises; the reference solutions will be discussed at the start of next session.
+
+---
+class: middle
+# Questions?
+
+???
+Open the floor for questions. If there are none, a good prompt is: which of today's knobs would you tune first for a new tabular problem, and why?
+
+    
+---
+class: center, middle
+
+# Backup
+
+???
+Backup slides: details, derivations and extra examples moved out of the main flow. They are here for questions and for self-study (4 slides); they are not needed for the homework or the project.
+
+---
+class: fit
+# Backprop in matrix form
+
+For layer `$l$` with pre-activation `$z_l = W_l a_{l-1} + b_l$` and activation `$a_l = f(z_l)$`:
+
+`$$ \delta_L = \frac{\partial \ell}{\partial z_L}, \qquad \delta_{l} = \big(W_{l+1}^T \delta_{l+1}\big) \odot f'(z_l) $$`
+
+`$$ \frac{\partial \ell}{\partial W_l} = \delta_l\, a_{l-1}^T, \qquad \frac{\partial \ell}{\partial b_l} = \delta_l $$`
+
+- For softmax + cross-entropy (and sigmoid + log loss): `$\delta_L = \hat{y} - y$`.
+- `$f'(z)$` appears in every step: saturated activations (`$f' \approx 0$`) → vanishing gradients.
+
+???
+This is the same computation written for any number of layers. The error signal delta flows backwards: multiply by the transposed weights, then elementwise by the derivative of the activation. The gradient for a weight matrix is the outer product of the error at that layer and the activation coming into it. The nice special case, prediction minus label at the output, is the same gradient you saw for logistic regression. The last line connects back to activations: a product of many small derivatives vanishes, which is why sigmoid networks with many layers trained so badly.
+
+---
+# Learning-rate schedules and choosing an optimizer
+
+- Schedules: step decay, **cosine decay**, **warm-up** then decay, "reduce on plateau".
+- Rough guide:
+  - small data, small net (≲ 10k rows): L-BFGS (full batch) works well; `solver="lbfgs"` in scikit-learn
+  - default: **AdamW**, `$\eta \approx 10^{-3}$`, maybe cosine decay
+  - with time for tuning: SGD + momentum + schedule can match or beat Adam
+- Batch size and learning rate interact: larger batches tolerate larger `$\eta$`.
+
+???
+A constant learning rate is rarely optimal: we want large steps early and small ones late. Cosine decay and a short linear warm-up are the common defaults in current libraries; reduce-on-plateau watches the validation loss. For the small tabular problems in this course, L-BFGS is a good option in scikit-learn because it uses curvature information and needs no learning rate, but it does not scale to large data. The last bullet is a practical warning: if you change the batch size, retune the learning rate.
+
+---
+# Activation: tanh vs ReLU
+
+.left-column[
+.smaller[
+```python
+mlp = MLPClassifier(solver="lbfgs",
+    hidden_layer_sizes=(10, 10, 10),
+    activation="tanh",
+    max_iter=1000, random_state=0)
+```
+```
+train 1.0  test 0.88
+```
+]
+]
+.right-column[
+.center[![:scale 95%](images/activation_functions_plot.png)]
+]
+
+???
+With tanh the boundary is smooth rather than piecewise linear, because tanh is smooth. Here it happens to generalize slightly better, but that is one seed on a tiny problem, so do not conclude that tanh is better. For larger networks ReLU is preferred because of its non-saturating gradient. The general point: the activation shapes the kind of functions that are easy to represent.
+
+---
+# Key parameters and attributes
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `hidden_layer_sizes` | `(100,)` | tuple: one entry per hidden layer |
+| `activation` | `"relu"` | also `"tanh"`, `"logistic"` |
+| `solver` | `"adam"` | `"lbfgs"` for small data, `"sgd"` with momentum |
+| `alpha` | `1e-4` | L2 penalty |
+| `learning_rate_init`, `batch_size` | `1e-3`, `min(200, n)` | Adam/SGD only |
+| `early_stopping`, `n_iter_no_change` | `False`, `10` | holds out `validation_fraction` |
+| `max_iter` | `200` | epochs for Adam/SGD |
+
+Attributes: `coefs_`, `intercepts_`, `loss_curve_`, `validation_scores_`, `n_iter_`.
+
+???
+This table is for reference. Two points to stress. First, alpha's default of 1e-4 is almost no regularization, so tune it. Second, early_stopping is off by default; turn it on for any dataset with more than a few thousand rows. The loss_curve_ attribute gives the training loss per epoch, which is what I plotted on the scaling slide. Also note that a ConvergenceWarning after max_iter epochs means optimization did not finish, not that the model is useless; check the curve.
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+    <script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+    <script>
+    // Config Remark
+    remark.macros['scale'] = function (percentage) {
+        var url = this;
+        return '<img src="' + url + '" style="width: ' + percentage + '" />';
+    };
+    config_remark = {
+        highlightStyle: 'magula',
+        highlightSpans: true,
+        highlightLines: true,
+        ratio: "16:9"
+    };
+      var slideshow = remark.create(config_remark);
+    // Configure MathJax
+    MathJax.Hub.Config({
+    tex2jax: {
+        inlineMath: [['$','$'], ['\\(','\\)']],
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre'] /* removed 'code' entry*/
+    }
+    });
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i = 0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+    </script>
+  </body>
+</html>

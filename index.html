@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIE683 Machine Learning</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Mulish:wght@400;600;700&family=Source+Serif+4:wght@600&display=swap">
+  <style>
+    :root {
+      --text: #1f2933;
+      --accent: #1b3a5c;
+      --muted: #52606d;
+      --line: #d9e2ec;
+      --paper: #f7f5f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--text);
+      font-family: Mulish, "Helvetica Neue", Arial, sans-serif;
+      font-size: 1.05rem;
+      line-height: 1.5;
+    }
+    main {
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 3.5rem 1.25rem 4.5rem;
+    }
+    .kicker {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0.4rem 0 0.35rem;
+      color: var(--accent);
+      font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+      font-size: 2.6rem;
+      font-weight: 600;
+      line-height: 1.12;
+    }
+    .meta, .hint {
+      margin: 0;
+      color: var(--muted);
+    }
+    .hint { margin-top: 1rem; }
+    kbd {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 0 0.35rem;
+      background: #fff;
+      font-family: inherit;
+      font-size: 0.9em;
+    }
+    ol {
+      list-style: none;
+      margin: 2rem 0 0;
+      padding: 0;
+      border-top: 1px solid var(--line);
+    }
+    li {
+      display: grid;
+      grid-template-columns: 2.5rem 1fr auto;
+      gap: 0.75rem;
+      align-items: baseline;
+      padding: 0.9rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .num {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+    }
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 0.18em;
+    }
+    a:hover { color: #0f2744; }
+    .pdf {
+      color: var(--muted);
+      font-size: 0.92rem;
+      font-weight: 600;
+    }
+    .quiet { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="kicker">Hacettepe University · Graduate School of Informatics · Fall 2026</p>
+    <h1>AIE683 Machine Learning</h1>
+    <p class="meta">Dr. Hakan Emekci · Thursdays 08:40–11:40</p>
+    <p class="hint">Open a week for the HTML slides. Press <kbd>P</kbd> for presenter notes and <kbd>C</kbd> to clone the view.</p>
+    <ol>
+      <li>
+        <span class="num">01</span>
+        <a href="weeks/week01-introduction/">Introduction &amp; Tooling</a>
+        <a class="pdf" href="slides-pdf/week01-introduction.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">02</span>
+        <a href="weeks/week02-generalization-validation/">Generalization &amp; Validation</a>
+        <a class="pdf" href="slides-pdf/week02-generalization-validation.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">03</span>
+        <a href="weeks/week03-preprocessing/">Preprocessing, Feature Engineering &amp; Data Leakage</a>
+        <a class="pdf" href="slides-pdf/week03-preprocessing.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">04</span>
+        <a href="weeks/week04-linear-models/">Linear Models</a>
+        <a class="pdf" href="slides-pdf/week04-linear-models.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">05</span>
+        <a href="weeks/week05-tree-ensembles/">Tree Ensembles</a>
+        <a class="pdf" href="slides-pdf/week05-tree-ensembles.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">06</span>
+        <a href="weeks/week06-neural-networks/">Neural Networks (MLP)</a>
+        <a class="pdf" href="slides-pdf/week06-neural-networks.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">07</span>
+        <a href="weeks/week07-model-evaluation/">Model Evaluation, Calibration &amp; Imbalanced Data</a>
+        <a class="pdf" href="slides-pdf/week07-model-evaluation.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">08</span>
+        <a href="weeks/week08-model-selection-tracking/">Model Selection &amp; Experiment Tracking</a>
+        <a class="pdf" href="slides-pdf/week08-model-selection-tracking.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">09</span>
+        <a href="weeks/week09-interpretation/">Model Interpretation &amp; Feature Selection</a>
+        <a class="pdf" href="slides-pdf/week09-interpretation.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">10</span>
+        <a href="weeks/week10-unsupervised/">Unsupervised Learning</a>
+        <a class="pdf" href="slides-pdf/week10-unsupervised.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">11</span>
+        <a href="weeks/week11-time-series/">Time Series Forecasting</a>
+        <a class="pdf" href="slides-pdf/week11-time-series.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">12</span>
+        <a href="weeks/week12-ml-lifecycle/">The ML Lifecycle</a>
+        <a class="pdf" href="slides-pdf/week12-ml-lifecycle.pdf">PDF</a>
+      </li>
+      <li>
+        <span class="num">13</span>
+        <span class="quiet">Project presentations</span>
+        <span></span>
+      </li>
+    </ol>
+  </main>
+</body>
+</html>

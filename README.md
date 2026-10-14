@@ -1,5 +1,7 @@
 # AIE683 Machine Learning
 
+**[Open the slides](https://hemekci.github.io/AIE683-Machine-Learning/)**
+
 **Hacettepe University, Graduate School of Informatics · Fall 2026**
 
 Instructor: Dr. Hakan Emekci
@@ -61,9 +63,11 @@ Details: [project/](project/) · [homeworks/](homeworks/)
 
 ## Viewing the slides
 
+On the site linked above, open a week for the HTML deck. Press `P` for presenter notes and `C` to clone the view. Fonts and math load from the internet.
+
 **PDF:** every week's slides are in [slides-pdf/](slides-pdf/) (one page per slide, including the Backup section at the end).
 
-**HTML (presenter mode):** Slides are [remark.js](https://remarkjs.com) HTML decks. Clone the repository and open `weeks/weekNN-*/index.html` in a browser (an internet connection is needed for fonts and math rendering). Press `P` for presenter notes and `C` to clone the view.
+**HTML (presenter mode):** Slides are [remark.js](https://remarkjs.com) HTML decks. Clone the repository and open `weeks/weekNN-*/index.html` in a browser.
 
 For topics outside the weekly plan (text data, topic models, word embeddings, CNNs, recommender systems), see Andreas Müller's original course materials: [amueller/COMS4995-s20](https://github.com/amueller/COMS4995-s20).
 

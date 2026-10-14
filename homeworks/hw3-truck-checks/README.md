@@ -1,6 +1,6 @@
 # HW3: Which Trucks Go to the Workshop?
 
-**Out:** Week 7 · **Due:** Week 9 (before the lecture) · **Weight:** 5% · **Expected effort:** 6–8 hours
+**Out:** Week 7 · **Due:** Week 9, 26 Nov 2026, 23:59 (Turkey time) · **Weight:** 5% · **Expected effort:** 6–8 hours
 
 ## Scenario
 

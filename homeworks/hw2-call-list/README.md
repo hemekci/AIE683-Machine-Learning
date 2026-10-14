@@ -1,6 +1,6 @@
 # HW2: Who Should the Bank Call?
 
-**Out:** Week 5 · **Due:** Week 7 (before the lecture) · **Weight:** 5% · **Expected effort:** 6–8 hours
+**Out:** Week 5 · **Due:** Week 7, 12 Nov 2026, 23:59 (Turkey time) · **Weight:** 5% · **Expected effort:** 6–8 hours
 
 ## Scenario
 

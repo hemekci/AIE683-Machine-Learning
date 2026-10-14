@@ -1,6 +1,6 @@
 # HW4: The Air-Quality Alert Service
 
-**Out:** Week 11 · **Due:** Week 13 (before the lecture) · **Weight:** 5% · **Expected effort:** 8 hours
+**Out:** Week 11 · **Due:** Week 13, 24 Dec 2026, 23:59 (Turkey time) · **Weight:** 5% · **Expected effort:** 8 hours
 
 ## Scenario
 

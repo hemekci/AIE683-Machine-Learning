@@ -4,10 +4,12 @@ Four hands-on assignments, 5% each (20% total), about 6–8 hours each. Each one
 
 | HW | Out | Due | Case | Topics |
 |---|---|---|---|---|
-| [HW1](hw1-rent-suggestion/) | Week 3 | Week 5 | Can the rent suggestion launch? | Cleaning, leakage audit, pipelines, regularized linear models |
-| [HW2](hw2-call-list/) | Week 5 | Week 7 | Who should the bank call? | Tree ensembles vs. MLP under an equal tuning budget; validation that matches deployment |
-| [HW3](hw3-truck-checks/) | Week 7 | Week 9 | Which trucks go to the workshop? | Costs, imbalance, thresholds, nested CV, corrected resampled t-test from MLflow |
-| [HW4](hw4-air-quality-service/) | Week 11 | Week 13 | The air-quality alert service | Forecasting, MLflow registry and aliases, serving, drift and anomaly detection, champion/challenger |
+| [HW1](hw1-rent-suggestion/) | Week 3 (8 Oct) | Week 5 (22 Oct) | Can the rent suggestion launch? | Cleaning, leakage audit, pipelines, regularized linear models |
+| [HW2](hw2-call-list/) | Week 5 (22 Oct) | Week 7 (12 Nov) | Who should the bank call? | Tree ensembles vs. MLP under an equal tuning budget; validation that matches deployment |
+| [HW3](hw3-truck-checks/) | Week 7 (12 Nov) | Week 9 (26 Nov) | Which trucks go to the workshop? | Costs, imbalance, thresholds, nested CV, corrected resampled t-test from MLflow |
+| [HW4](hw4-air-quality-service/) | Week 11 (10 Dec) | Week 13 (24 Dec) | The air-quality alert service | Forecasting, MLflow registry and aliases, serving, drift and anomaly detection, champion/challenger |
+
+Deadlines are 23:59 Turkey time on the date shown. Submit one .zip through the [submission portal](https://yunus.hacettepe.edu.tr/~hakanemekci/submit/); late submissions lose 10% per day and are not accepted after 3 days (see the [syllabus](../syllabus.md#policies)).
 
 ## How every homework works
 

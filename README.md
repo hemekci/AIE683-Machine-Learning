@@ -17,15 +17,15 @@ This repository holds the course materials: syllabus, weekly slides and notebook
 | 2 | Generalization & validation: nearest neighbors, bias–variance, cross-validation strategies | [slides](weeks/week02-generalization-validation/) · [PDF](slides-pdf/week02-generalization-validation.pdf) |  |
 | 3 | Preprocessing, feature engineering, pipelines, data leakage | [slides](weeks/week03-preprocessing/) · [PDF](slides-pdf/week03-preprocessing.pdf) | HW1 out |
 | 4 | Linear models: regression, regularization, logistic regression, SVMs | [slides](weeks/week04-linear-models/) · [PDF](slides-pdf/week04-linear-models.pdf) |  |
-| 5 | Tree ensembles: decision trees, random forests, gradient boosting | [slides](weeks/week05-tree-ensembles/) · [PDF](slides-pdf/week05-tree-ensembles.pdf) | HW1 due · HW2 out · **Paper proposal** |
+| 5 | Tree ensembles: decision trees, random forests, gradient boosting | [slides](weeks/week05-tree-ensembles/) · [PDF](slides-pdf/week05-tree-ensembles.pdf) | HW1 due (22 Oct) · HW2 out · **Paper proposal** (22 Oct) |
 | 6 | Neural networks (MLP): backpropagation, regularization, MLPs on tabular data | [slides](weeks/week06-neural-networks/) · [PDF](slides-pdf/week06-neural-networks.pdf) |  |
-| 7 | Evaluation: metrics, calibration, imbalanced data, decision thresholds | [slides](weeks/week07-model-evaluation/) · [PDF](slides-pdf/week07-model-evaluation.pdf) | HW2 due · HW3 out |
+| 7 | Evaluation: metrics, calibration, imbalanced data, decision thresholds | [slides](weeks/week07-model-evaluation/) · [PDF](slides-pdf/week07-model-evaluation.pdf) | HW2 due (12 Nov) · HW3 out |
 | 8 | Model selection & experiment tracking: tuning, nested CV, model comparison, MLflow Tracking | [slides](weeks/week08-model-selection-tracking/) · [PDF](slides-pdf/week08-model-selection-tracking.pdf) |  |
-| 9 | Interpretation & feature selection: permutation importance, PDP, SHAP | [slides](weeks/week09-interpretation/) · [PDF](slides-pdf/week09-interpretation.pdf) | HW3 due |
-| 10 | Unsupervised learning: PCA, t-SNE/UMAP, clustering, mixture models | [slides](weeks/week10-unsupervised/) · [PDF](slides-pdf/week10-unsupervised.pdf) | **Progress report** |
+| 9 | Interpretation & feature selection: permutation importance, PDP, SHAP | [slides](weeks/week09-interpretation/) · [PDF](slides-pdf/week09-interpretation.pdf) | HW3 due (26 Nov) |
+| 10 | Unsupervised learning: PCA, t-SNE/UMAP, clustering, mixture models | [slides](weeks/week10-unsupervised/) · [PDF](slides-pdf/week10-unsupervised.pdf) | **Progress report** (3 Dec) |
 | 11 | Time series forecasting: lag features, time-based CV, boosting vs. classical baselines | [slides](weeks/week11-time-series/) · [PDF](slides-pdf/week11-time-series.pdf) | HW4 out |
 | 12 | The ML lifecycle: MLflow Models & Registry, serving, monitoring, drift, anomaly detection, retraining | [slides](weeks/week12-ml-lifecycle/) · [PDF](slides-pdf/week12-ml-lifecycle.pdf) |  |
-| 13 | Project presentations |  | HW4 due · **Presentation** |
+| 13 | Project presentations |  | HW4 due (24 Dec) · **Presentation** (slides 23 Dec) |
 | Finals | | | **Final paper & code** |
 
 The plan may shift with the pace of the class; changes are announced in class and reflected here.

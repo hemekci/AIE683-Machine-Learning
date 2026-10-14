@@ -6,12 +6,12 @@ The project is an original research study in machine learning or deep learning, 
 
 | Component | Weight | Due | Deliverable |
 |---|---|---|---|
-| Paper proposal | 10% | Week 5 | 2-page proposal (PDF) |
-| Progress report | 15% | Week 10 | Draft paper with preliminary results + code repository |
-| Presentation | 15% | Week 13 | 12-minute talk + 3 minutes Q&A |
-| Final paper & code | 40% | Finals week | 6–8 page paper (PDF) + reproducible code |
+| Paper proposal | 10% | Week 5 (22 Oct) | 2-page proposal (PDF) |
+| Progress report | 15% | Week 10 (3 Dec) | Draft paper with preliminary results + code repository |
+| Presentation | 15% | Week 13 (24 Dec; slides due 23 Dec) | 12-minute talk + 3 minutes Q&A |
+| Final paper & code | 40% | Finals week (date TBA) | 6–8 page paper (PDF) + reproducible code |
 
-The proposal counts separately (10%); the remaining three components make up the 70% project grade.
+Deadlines are 23:59 Turkey time on the date shown. The proposal counts separately (10%); the remaining three components make up the 70% project grade.
 
 ## 1. Paper Proposal (2 pages)
 

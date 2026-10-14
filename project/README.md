@@ -1,6 +1,6 @@
 # Term Project: Research Paper
 
-The project is an original ML study written up as a conference-style research paper. Work alone or in pairs; pairs are expected to deliver proportionally more.
+The project is an original research study in machine learning or deep learning, written up as a conference-style research paper. It must make an academic contribution: a new or substantially modified method, a new empirical finding, a new dataset or benchmark, or a carefully argued negative result. Applying a known model to a new dataset is not enough on its own. Work alone or in pairs; pairs are expected to deliver proportionally more.
 
 ## Components
 
@@ -15,12 +15,32 @@ The proposal counts separately (10%); the remaining three components make up the
 
 ## 1. Paper Proposal (2 pages)
 
-- **Problem and motivation:** what question you are asking and why it matters.
-- **Related work:** at least 5 relevant papers.
+Two pages plus references in a conference template (NeurIPS, ICML, or IEEE), submitted as a PDF inside a .zip through the [submission portal](https://yunus.hacettepe.edu.tr/~hakanemekci/submit/).
+
+- **Research question and contribution:** the question you are asking, why it matters, and a one-sentence contribution statement: what will be new compared with the closest prior work.
+- **Related work:** at least 8 papers, at least 5 of them peer-reviewed. Name the 2–3 closest works and the gap your study fills.
 - **Data:** source, size, license, and how you will access it.
-- **Method:** baselines and the approach you will compare against them.
-- **Evaluation:** metrics and validation strategy.
+- **Method:** strong baselines, the approach you will compare against them, and the ablations you plan.
+- **Evaluation:** metrics, a leakage-free validation strategy, and how you will compare models statistically.
 - **Timeline and risks:** milestones through the final submission, and what you will do if the main plan fails.
+- **Target venue (recommended):** a conference or workshop where the work could be submitted.
+
+**Scope:** the study must use the ML/DL methods of this course (e.g. regularized linear models, tree ensembles, neural networks, model evaluation and selection, interpretation, unsupervised learning, time series, the ML lifecycle).
+
+### Proposal Rubric
+
+| Criterion | Points | What we look for |
+|---|---|---|
+| Research question and originality | 25 | A clear, testable question and an explicit contribution beyond the closest prior work |
+| Related work and positioning | 20 | At least 8 papers (5+ peer-reviewed); the closest works and the gap are named |
+| Fit with the course | 10 | Uses the ML/DL methods of this course |
+| Method and baselines | 15 | Strong baselines and planned ablations |
+| Evaluation design | 15 | Appropriate metrics, leakage-free validation, statistical comparison |
+| Data, feasibility and ethics | 5 | Data access and license, compute, ethical issues |
+| Timeline and risks | 5 | Realistic milestones and a fallback plan |
+| Writing | 5 | Clear, within 2 pages, conference template |
+
+**Minimum bar:** a proposal without a contribution statement and the closest prior work is returned for revision and must be resubmitted within one week.
 
 ## 2. Progress Report
 

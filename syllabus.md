@@ -49,7 +49,7 @@ By the end of the course, students will be able to:
 
 | Component | Weight | Due |
 |---|---|---|
-| Paper proposal | 10% | Week 5 (22 Oct) |
+| Paper proposal | 10% | 29 Oct (extended from Week 5) |
 | Homework assignments (4 × 5%) | 20% | Weeks 5, 7, 9, 13 (22 Oct, 12 Nov, 26 Nov, 24 Dec) |
 | Project & research paper | 70% | Progress report Week 10 (3 Dec); presentation Week 13 (24 Dec; slides due 23 Dec); final paper in finals week (date TBA) |
 

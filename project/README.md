@@ -6,7 +6,7 @@ The project is an original research study in machine learning or deep learning, 
 
 | Component | Weight | Due | Deliverable |
 |---|---|---|---|
-| Paper proposal | 10% | Week 5 (22 Oct) | 2-page proposal (PDF) |
+| Paper proposal | 10% | 29 Oct (extended from Week 5) | 2-page proposal (PDF) |
 | Progress report | 15% | Week 10 (3 Dec) | Draft paper with preliminary results + code repository |
 | Presentation | 15% | Week 13 (24 Dec; slides due 23 Dec) | 12-minute talk + 3 minutes Q&A |
 | Final paper & code | 40% | Finals week (date TBA) | 6–8 page paper (PDF) + reproducible code |

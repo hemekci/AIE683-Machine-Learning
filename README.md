@@ -17,7 +17,7 @@ This repository holds the course materials: syllabus, weekly slides and notebook
 | 2 | Generalization & validation: nearest neighbors, bias–variance, cross-validation strategies | [slides](weeks/week02-generalization-validation/) · [PDF](slides-pdf/week02-generalization-validation.pdf) |  |
 | 3 | Preprocessing, feature engineering, pipelines, data leakage | [slides](weeks/week03-preprocessing/) · [PDF](slides-pdf/week03-preprocessing.pdf) | HW1 out |
 | 4 | Linear models: regression, regularization, logistic regression, SVMs | [slides](weeks/week04-linear-models/) · [PDF](slides-pdf/week04-linear-models.pdf) |  |
-| 5 | Tree ensembles: decision trees, random forests, gradient boosting | [slides](weeks/week05-tree-ensembles/) · [PDF](slides-pdf/week05-tree-ensembles.pdf) | HW1 due (22 Oct) · HW2 out · **Paper proposal** (22 Oct) |
+| 5 | Tree ensembles: decision trees, random forests, gradient boosting | [slides](weeks/week05-tree-ensembles/) · [PDF](slides-pdf/week05-tree-ensembles.pdf) | HW1 due (22 Oct) · HW2 out · **Paper proposal** (extended to 29 Oct) |
 | 6 | Neural networks (MLP): backpropagation, regularization, MLPs on tabular data | [slides](weeks/week06-neural-networks/) · [PDF](slides-pdf/week06-neural-networks.pdf) |  |
 | 7 | Evaluation: metrics, calibration, imbalanced data, decision thresholds | [slides](weeks/week07-model-evaluation/) · [PDF](slides-pdf/week07-model-evaluation.pdf) | HW2 due (12 Nov) · HW3 out |
 | 8 | Model selection & experiment tracking: tuning, nested CV, model comparison, MLflow Tracking | [slides](weeks/week08-model-selection-tracking/) · [PDF](slides-pdf/week08-model-selection-tracking.pdf) |  |
